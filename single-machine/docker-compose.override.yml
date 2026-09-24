@@ -1,0 +1,20 @@
+# =============================================================================
+#  Windows / Docker Desktop override for THIS box (grafana-key-vmagent lab).
+#
+#  Mounting /var/run/docker.sock into Linux containers does NOT reach the
+#  daemon on Docker Desktop for Windows, so Traefik runs WITHOUT the Docker
+#  provider here. Routing comes entirely from the file provider:
+#    - ./traefik/local-static.yml   (static config, no docker provider)
+#    - ./traefik/dynamic-local/     (public.yml / internal.yml / middlewares.yml)
+#
+#  Loaded automatically by `docker compose up` in this directory. Linux hosts
+#  keep using the canonical docker-provider/labels configuration instead.
+# =============================================================================
+
+services:
+  traefik:
+    command:
+      - --configFile=/etc/traefik/traefik-local.yml
+    volumes:
+      - ./traefik/local-static.yml:/etc/traefik/traefik-local.yml:ro
+      - ./traefik/dynamic-local:/etc/traefik/dynamic-local:ro

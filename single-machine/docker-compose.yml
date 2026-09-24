@@ -1,0 +1,223 @@
+# =============================================================================
+#  SINGLE MACHINE (all-in-one)  —  full monitoring + auth stack
+#
+#  Internet -> Traefik -> { Grafana , Keycloak(->postgres) , VictoriaMetrics ...}
+#  vmagent scrapes everything on network "mon-net" and remote-writes to VM.
+#
+#  Usage:
+#    cp .env.example .env          # fill in values
+#    ./deploy.sh                   # renders vmauth.yml and starts the stack
+# =============================================================================
+
+networks:
+  mon-net:
+    name: mon-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.90.0.0/16   # pinned — avoid clash with 172.29.50.0/24 LAN
+
+services:
+
+  # -----------------------------------------------------------------------
+  # Edge: Traefik reverse proxy (TLS termination, routing, metrics, logs)
+  # -----------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.2
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "${EDGE_BIND}:80:80"            # edge — set EDGE_BIND=127.0.0.1 to restrict to loopback
+      - "${EDGE_BIND}:443:443"
+      - "127.0.0.1:9102:9102"   # Prometheus metrics — loopback (vmagent uses mon-net DNS)
+      - "127.0.0.1:9091:8080"   # dashboard — loopback only
+    volumes:
+      - ${DOCKER_SOCKET}:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./traefik/certs:/etc/traefik/certs
+      - ./traefik/logs:/var/log/traefik
+    networks:
+      - mon-net
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    depends_on:
+      - oauth2-proxy
+
+  # -----------------------------------------------------------------------
+  # Backend time-series database
+  # -----------------------------------------------------------------------
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: victoria-metrics
+    restart: unless-stopped
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=${VICTORIA_RETENTION}"
+    ports:
+      - "127.0.0.1:8428:8428"  # loopback only in all-in-one mode
+    volumes:
+      - ./victoria-metrics-data:/storage
+    networks:
+      - mon-net
+
+  # -----------------------------------------------------------------------
+  # Auth gateway in front of VictoriaMetrics (OPTIONAL hardening, default: path-per-user)
+  # -----------------------------------------------------------------------
+  vmauth:
+    image: victoriametrics/vmauth:latest
+    container_name: vmauth
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8427:8427"  # loopback only for the all-in-one box
+    volumes:
+      - ./vmauth.yml:/etc/vmauth.yml
+    command:
+      - "-auth.config=/etc/vmauth.yml"
+    networks:
+      - mon-net
+    depends_on:
+      - victoria-metrics
+
+  # -----------------------------------------------------------------------
+  # Grafana (canonical name: grafana.<domain> / alias cockpitnama.<domain>)
+  # -----------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    container_name: grafana
+    restart: unless-stopped
+    user: "${UID:-472}:${GID:-472}"
+    environment:
+      - TZ=${TZ}
+      - GF_SERVER_ROOT_URL=https://${DOMAIN_GRAFANA}
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=${GF_USERS_ALLOW_SIGN_UP}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED}
+      # --- Keycloak OIDC only (no local login) ---
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+      - GF_AUTH_BASIC_ENABLED=${GF_AUTH_BASIC_ENABLED:-false}
+      - GF_AUTH_LOGIN_FORM_ENABLED=${GF_AUTH_LOGIN_FORM_ENABLED:-false}
+      - GF_AUTH_DISABLE_LOGIN_FORM=${GF_AUTH_DISABLE_LOGIN_FORM:-true}
+      - GF_AUTH_GENERIC_OAUTH_NAME=Otech IDP
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID=${KC_GRAFANA_CLIENT_ID}
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=${KC_GRAFANA_CLIENT_SECRET}
+      - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://${DOMAIN_KEYCLOAK}/realms/grafana-namawater/protocol/openid-connect/auth
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://${DOMAIN_KEYCLOAK}/realms/grafana-namawater/protocol/openid-connect/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://${DOMAIN_KEYCLOAK}/realms/grafana-namawater/protocol/openid-connect/userinfo
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(realm_access.roles[*], 'grafana-admin') && 'Admin' || contains(realm_access.roles[*], 'grafana-editor') && 'Editor' || 'Viewer'
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true  # local self-signed TLS (env name = key uppercased)
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+    volumes:
+      - ./grafana-data:/var/lib/grafana
+      - ./provisioning:/etc/grafana/provisioning
+    networks:
+      - mon-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=mon-net"
+      - "traefik.http.routers.grafana.rule=Host(`${DOMAIN_COCKPIT}`) || Host(`${DOMAIN_GRAFANA}`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.routers.grafana.middlewares=secHeaders"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+  # -----------------------------------------------------------------------
+  # Keycloak SSO + Postgres
+  # -----------------------------------------------------------------------
+  keycloak-db:
+    image: postgres:16
+    container_name: keycloak-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD}
+    volumes:
+      - ./kc-postgres:/var/lib/postgresql/data
+    networks:
+      - mon-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: keycloak
+    restart: unless-stopped
+    command: start --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-db
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HOSTNAME: ${DOMAIN_KEYCLOAK}
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "true"
+      KC_PROXY: edge                       # Traefik terminates TLS
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"           # /metrics on :8080 for vmagent
+    volumes:
+      - ./kc-import:/opt/keycloak/data/import:ro   # auto-import realm on first boot
+    networks:
+      - mon-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=mon-net"
+      - "traefik.http.routers.kc.rule=Host(`${DOMAIN_KEYCLOAK}`)"
+      - "traefik.http.routers.kc.entrypoints=websecure"
+      - "traefik.http.routers.kc.tls=true"
+      - "traefik.http.services.kc.loadbalancer.server.port=8080"
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+
+  # -----------------------------------------------------------------------
+  # Local scraper -> central VictoriaMetrics (self-monitoring of the box)
+  # -----------------------------------------------------------------------
+  vmagent:
+    image: victoriametrics/vmagent:latest
+    container_name: vmagent
+    restart: unless-stopped
+    volumes:
+      - ./scrape.yml:/etc/prometheus/scrape.yml:ro
+    command:
+      - "-promscrape.config=/etc/prometheus/scrape.yml"
+      - "-remoteWrite.url=http://victoria-metrics:8428/api/v1/write"
+    networks:
+      - mon-net
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.6.1
+    container_name: node-exporter
+    restart: unless-stopped
+    networks:
+      - mon-net
+
+  # -----------------------------------------------------------------------
+  # OPTIONAL: ForwardAuth for internal-only dashboards (vm/vmagent/traefik)
+  # -----------------------------------------------------------------------
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    container_name: oauth2-proxy
+    restart: unless-stopped
+    networks:
+      - mon-net
+    environment:
+      - OAUTH2_PROXY_PROVIDER=oidc
+      - OAUTH2_PROXY_OIDC_ISSUER_URL=https://${DOMAIN_KEYCLOAK}/realms/grafana-namawater
+      - OAUTH2_PROXY_CLIENT_ID=${KC_OAUTH2_CLIENT_ID}
+      - OAUTH2_PROXY_CLIENT_SECRET=${KC_OAUTH2_CLIENT_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECRET=${KC_OAUTH2_COOKIE_SECRET}
+      - OAUTH2_PROXY_COOKIE_SECURE=false  # internal UIs are http://127.0.0.1:9091 (Secure flag would break them)
+      - OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY=true  # local self-signed TLS (remove for prod/Let's Encrypt)
+      - OAUTH2_PROXY_EMAIL_DOMAINS=*
+      - OAUTH2_PROXY_HTTP_ADDRESS=0.0.0.0:4180

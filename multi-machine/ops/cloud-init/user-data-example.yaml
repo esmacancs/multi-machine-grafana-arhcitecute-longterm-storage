@@ -1,0 +1,38 @@
+#cloud-config
+# =============================================================================
+#  CLOUD-INIT user-data for ONE NAMA machine (Ubuntu 24.04 LTS).
+#  Use together with network-config-example (same NoCloud seed).
+#
+#  Role table — use the PROVIDER-ASSIGNED static IPs (example subnet shown):
+#     nama-mon-stack  172.29.50.2   Grafana + VictoriaMetrics + vmauth
+#     namastorage     172.29.50.3   vmagent + node/blackbox/pushgateway + FortiGate/OCI
+#     nama-auth-vm    172.29.50.4   Keycloak + PostgreSQL
+#
+#  Injection methods:
+#     * Proxmox:   VM -> Cloud-Init -> paste user-data + network-config
+#     * VMware:    OVA/cloud image + guestinfo, or customize a template
+#     * KVM:       -drive file=seed.iso,media=cdrom  (cloud-localds, NoCloud)
+#     * Bare metal ISO: Ubuntu autoinstall (subiquity) — embed this under autoinstall
+#  Verify after boot:  cloud-init status --wait && hostname -I
+#
+#  After first boot, run provisioning (this user-data only sets net/hostname/ssh):
+#     ops/provision-all.sh 172.29.50.2 172.29.50.3 172.29.50.4 --user ubuntu
+# =============================================================================
+hostname: nama-mon-stack             # <-- CHANGE per role (see table above)
+manage_etc_hosts: true
+
+users:
+  - name: ubuntu
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"   # needed by provision-all.sh (unattended)
+    ssh_import_id: []                # remove this line if you use import
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... your-admin-key@workstation  # <-- CHANGE
+      # Windows/WSL you can use:
+      # - ssh-rsa AAAA... (paste from ~/.ssh/id_rsa.pub)
+
+# cloud-init runs this AFTER net+ssh are ready — keep it minimal; the heavy
+# lifting (docker, deploy, firewall) is done by ops/provision-all.sh.
+runcmd:
+  - [ touch, /var/log/nama-lever ]

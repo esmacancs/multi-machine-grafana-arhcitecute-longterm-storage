@@ -1,0 +1,2105 @@
+root@nama-mon-stack:~/nama-stack# ll
+total 42108
+drwxr-xr-x  5 root docker     4096 Jul 22 08:09 ./
+drwx------ 13 root root       4096 Sep 23 05:15 ../
+-rwxr-xr-x  1 root root        122 May 24 12:32 deploy.sh*
+-rw-r--r--  1 root root       3257 Jul 22 08:09 docker-compose.yml
+-rw-r--r--  1 root root       1392 Jun  1 09:43 docker-compose.yml_bak
+-rw-r--r--  1 root root        769 May 31 07:33 .env
+-rw-r--r--  1 root root        486 May 24 10:49 .env.gpg
+-rw-r--r--  1 root root   43068164 Feb 22  2026 grafana-backup-2026-02-22.tar.gz
+drwxr-xr-x  7 root root       4096 Sep 23 05:14 onetech-data/
+drwxr-xr-x  4 root docker     4096 Nov 10  2025 provisioning/
+drwxr-xr-x  8 root root       4096 Nov 11  2025 victoria-metrics-data/
+-rw-r--r--  1 root root        217 May 24 12:33 vmauth.yml
+-rw-r--r--  1 root root        234 May 24 10:43 vmauth.yml.tpl
+root@nama-mon-stack:~/nama-stack# cat docker-compose.yml
+version: "3.8"
+
+services:
+  victoria-metrics:
+    image: ${VICTORIA_IMAGE}
+    container_name: ${VICTORIA_CONTAINER}
+    ports:
+      - "${VICTORIA_PORT}:8428"
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=${VICTORIA_RETENTION}"
+    volumes:
+      - ${VICTORIA_STORAGE_PATH}:/storage
+    restart: unless-stopped
+  vmauth:
+    image: victoriametrics/vmauth:latest
+    container_name: vmauth
+    ports:
+      - "172.29.50.2:8427:8427"
+    volumes:
+      - ./vmauth.yml:/etc/vmauth.yml
+    command:
+      - "-auth.config=/etc/vmauth.yml"
+    depends_on:
+      - victoria-metrics
+    restart: unless-stopped
+
+  onetech:
+    image: ${ONETECH_IMAGE}
+    container_name: ${ONETECH_CONTAINER}
+    user: "${UID}:${GID}"
+    ports:
+      - "${ONETECH_PORT}:3000"
+    depends_on:
+      - victoria-metrics
+    environment:
+        # --- FORCE OAUTH ONLY ---
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+        #- GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN=true
+      - GF_LOGIN_CONTENT=Welcome to Otech Monitoring Platform. Use Keycloak (Otech IDP) for access. Contact NOC for support.
+       # --- DISABLE LOCAL LOGIN ---
+      - GF_AUTH_BASIC_ENABLED=false
+      - GF_AUTH_LOGIN_FORM_ENABLED=false
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+        #- GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=${GF_USERS_ALLOW_SIGN_UP}
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED}
+      - TZ=${TZ}
+      - GF_PATHS_PROVISIONING=${GF_PATHS_PROVISIONING}
+      - GF_SERVER_ROOT_URL=https://cockpitnama.otech.om
+
+      - GF_AUTH_GENERIC_OAUTH_NAME=Otech IDP
+
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID=grafana-nama
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=5mPJOzexg5PjHfgbdu6FqetulAeTZvNs
+
+      - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email
+
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=https://identitynama.otech.om/realms/grafana-namawater/protocol/openid-connect/auth
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=https://identitynama.otech.om/realms/grafana-namawater/protocol/openid-connect/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=https://identitynama.otech.om/realms/grafana-namawater/protocol/openid-connect/userinfo
+
+        #      - GF_AUTH_SIGNOUT_REDIRECT_URL=https://identitynama.otech.om/realms/grafana-namawater/protocol/openid-connect/logout
+      - GF_LOG_LEVEL=debug
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(realm_access.roles[*], 'grafana-admin') && 'Admin' || contains(realm_access.roles[*], 'grafana-editor') && 'Editor' || 'Viewer'
+      # SMTP2GO SMTP Configuration
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=mail-eu.smtp2go.com:2525
+      - GF_SMTP_USER=cockpit-alerts@otech.om
+      - GF_SMTP_PASSWORD=8dtIvbltAns27bSx
+      - GF_SMTP_FROM_ADDRESS=cockpit-alerts@otech.om
+      - GF_SMTP_FROM_NAME=NAMA Monitoring
+      - GF_SMTP_STARTTLS_POLICY=Mandatory
+
+    volumes:
+      - ${ONETECH_DATA}:/var/lib/grafana
+      - ./provisioning:/etc/grafana/provisioning
+    restart: unless-stopped
+
+  node-exporter:
+    image: ${NODE_IMAGE}
+    container_name: ${NODE_CONTAINER}
+    ports:
+      - "${NODE_PORT}:9100"
+    restart: unless-stopped
+root@nama-mon-stack:~/nama-stack# cat .env
+# Grafana / onetech
+ONETECH_IMAGE=otech-grafana:13
+ONETECH_CONTAINER=onetech
+ONETECH_PORT=3000
+ONETECH_DATA=./onetech-data
+
+# Grafana credentials
+GF_SECURITY_ADMIN_USER=esmacan
+GF_SECURITY_ADMIN_PASSWORD=P@ssw0rd
+GF_USERS_ALLOW_SIGN_UP=false
+GF_AUTH_ANONYMOUS_ENABLED=false
+TZ=Asia/Muscat
+GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+
+# VictoriaMetrics
+VICTORIA_IMAGE=ghcr.io/esmacancs/victoriametrics-victoria-metrics-latest
+VICTORIA_CONTAINER=victoria-metrics
+VICTORIA_PORT=8428
+VICTORIA_STORAGE_PATH=./victoria-metrics-data
+VICTORIA_RETENTION=30
+
+# Node Exporter
+NODE_IMAGE=ghcr.io/esmacancs/prom-node-exporter-latest
+NODE_CONTAINER=node-exporter
+NODE_PORT=9100
+
+VMAGENT_USER=vmagent
+VMAGENT_PASS=strongpassword
+
+GRAFANA_USER=grafana
+GRAFANA_PASS=strongpassword2
+root@nama-mon-stack:~/nama-stack# cat deploy.sh
+#!/bin/bash
+set -e
+
+set -a
+eval "$(gpg -d .env.gpg)"
+set +a
+
+envsubst < vmauth.yml.tpl > vmauth.yml
+
+docker compose up -d
+root@nama-mon-stack:~/nama-stack#
+
+
+
+
+vm2
+root@namastorage:~/nama-stack# ll
+total 136
+drwxr-xr-x  2 root docker  4096 Jun 30 07:50 ./
+drwx------ 14 root root    4096 Sep 23 05:17 ../
+-rw-r--r--  1 root docker   524 Nov 10  2025 docker-compose.yml
+-rw-r--r--  1 root root     401 Jun 28 11:00 .env
+-rw-r--r--  1 root root   51244 Jun 28 11:57 scrape.yml
+-rw-r--r--  1 root root   22048 May  5 10:52 scrape.yml_5may
+-rw-r--r--  1 root root     929 Nov 12  2025 scrape.yml_bak
+-rw-r--r--  1 root root    4776 Jan 27  2026 scrape.yml_bakks
+-rw-r--r--  1 root root   30554 Jun  4 05:33 scrape.yml-beforepushgw
+root@namastorage:~/nama-stack# cat docker-compose.yml
+version: "3.8"
+
+services:
+  vmagent:
+    image: ${VMAGENT_IMAGE}
+    container_name: ${VMAGENT_CONTAINER}
+    ports:
+      - "${VMAGENT_PORT}:8429"
+    volumes:
+      - ${VMAGENT_SCRAPE_CONFIG}:/etc/prometheus/scrape.yml:ro
+    command:
+      - "-promscrape.config=/etc/prometheus/scrape.yml"
+      - "-remoteWrite.url=${VMAGENT_REMOTE_WRITE_URL}"
+    restart: unless-stopped
+
+  node-exporter:
+    image: ${NODE_IMAGE}
+    container_name: ${NODE_CONTAINER}
+    ports:
+      - "${NODE_PORT}:9100"
+    restart: unless-stopped
+root@namastorage:~/nama-stack# cat .env
+VMAGENT_IMAGE=ghcr.io/esmacancs/victoriametrics-vmagent-latest
+VMAGENT_CONTAINER=vmagent
+VMAGENT_PORT=8429
+VMAGENT_SCRAPE_CONFIG=./scrape.yml
+VMAGENT_REMOTE_WRITE_URL=http://172.29.50.2:8428/api/v1/write
+#VMAGENT_REMOTE_WRITE_URL=http://vmagent:strongpassword@172.29.50.2:8427/api/v1/write
+# Node Exporter
+NODE_IMAGE=quay.io/prometheus/node-exporter:v1.6.1
+NODE_CONTAINER=node-exporter
+NODE_PORT=9100
+root@namastorage:~/nama-stack# cat scrape.yml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "node"
+    static_configs:
+      - targets:
+        - 10.160.51.25:9182
+        labels:
+          instance: 'OCI-AdMgrVT01: 10.160.51.25'
+          vm_name: OCI-AdMgrVT01
+          private_ip: 10.160.51.25
+          application_type: ADManager App
+          role: windows
+      - targets:
+        - 10.160.49.46:9182
+        labels:
+          instance: 'OCI-vpccbapp1: 10.160.49.46'
+          vm_name: OCI-vpccbapp1
+          private_ip: 10.160.49.46
+          application_type: CCB App
+          role: windows
+      - targets:
+        - 10.160.52.36:9182
+        labels:
+          instance: 'OCI-PVTRENDMIC: 10.160.52.36'
+          vm_name: OCI-PVTRENDMIC
+          private_ip: 10.160.52.36
+          application_type: Trend Micro App
+          role: windows
+      - targets:
+        - 10.160.49.245:9100
+        labels:
+          instance: 'OCI-VPCPASS: 10.160.49.245'
+          vm_name: OCI-VPCPASS
+          private_ip: 10.160.49.245
+          application_type: Clearpass
+          role: linux
+      - targets:
+        - 10.160.49.33:9182
+        labels:
+          instance: 'OCI-VPTFSRE: 10.160.49.33'
+          vm_name: OCI-VPTFSRE
+          private_ip: 10.160.49.33
+          application_type: TFS App
+          role: windows
+      - targets:
+        - 10.160.48.23:9182
+        labels:
+          instance: 'OCI_VPOWWSC: 10.160.48.23'
+          vm_name: OCI_VPOWWSC
+          private_ip: 10.160.48.23
+          application_type: NWS Website
+          role: windows
+      - targets:
+        - 10.160.49.39:9182
+        labels:
+          instance: 'OCI-PVTVSC: 10.160.49.39'
+          vm_name: OCI-PVTVSC
+          private_ip: 10.160.49.39
+          application_type: Screen App
+          role: windows
+      - targets:
+        - 10.160.49.28:9182
+        labels:
+          instance: 'OCI-PVVISION: 10.160.49.28'
+          vm_name: OCI-PVVISION
+          private_ip: 10.160.49.28
+          application_type: Vision App
+          role: windows
+      - targets:
+        - 10.160.48.27:9182
+        labels:
+          instance: 'OCI-PVDMAWEB: 10.160.48.27'
+          vm_name: OCI-PVDMAWEB
+          private_ip: 10.160.48.27
+          application_type: DMA App
+          role: windows
+      - targets:
+        - 10.160.52.20:9182
+        labels:
+          instance: 'OCI-VPTREMICSGS: 10.160.52.20'
+          vm_name: OCI-VPTREMICSGS
+          private_ip: 10.160.52.20
+          application_type: Trend Micro App
+          role: windows
+      - targets:
+        - 10.160.52.19:9182
+        labels:
+          instance: 'OCI-VPTREMICSGP: 10.160.52.19'
+          vm_name: OCI-VPTREMICSGP
+          private_ip: 10.160.52.19
+          application_type: Trend Micro App
+          role: windows
+      - targets:
+        - 10.160.48.30:9100
+        labels:
+          instance: 'OCI-VPIVR02: 10.160.48.30'
+          vm_name: OCI-VPIVR02
+          private_ip: 10.160.48.30
+          application_type: GEN IVR Callcenter App
+          role: linux
+      - targets:
+        - 10.160.48.29:9100
+        labels:
+          instance: 'OCI-VPIVR01: 10.160.48.29'
+          vm_name: OCI-VPIVR01
+          private_ip: 10.160.48.29
+          application_type: GEN IVR Callcenter App
+          role: linux
+      - targets:
+        - 10.160.49.82:9100
+        labels:
+          instance: 'OCI-VPCCGENSP2: 10.160.49.82'
+          vm_name: OCI-VPCCGENSP2
+          private_ip: 10.160.49.82
+          application_type: GEN Callcenter SP1
+          role: linux
+      - targets:
+        - 10.160.49.81:9100
+        labels:
+          instance: 'OCI-VPCCGENSP1: 10.160.49.81'
+          vm_name: OCI-VPCCGENSP1
+          private_ip: 10.160.49.81
+          application_type: GEN Callcenter SP2
+          role: linux
+      - targets:
+        - 10.160.50.39:9182
+        labels:
+          instance: 'oci_vpontime_db: 10.160.50.39'
+          vm_name: oci_vpontime_db
+          private_ip: 10.160.50.39
+          application_type: Ontime DB
+          role: windows
+      - targets:
+        - 10.160.51.33:9182
+        labels:
+          instance: 'NAMA-VBO: 10.160.51.33'
+          vm_name: NAMA-VBO
+          private_ip: 10.160.51.33
+          application_type: Veem Backup App
+          role: windows
+      - targets:
+        - 10.160.51.227:9182
+        labels:
+          instance: 'OCI-VPEX01: 10.160.51.227'
+          vm_name: OCI-VPEX01
+          private_ip: 10.160.51.227
+          application_type: Exchange
+          role: windows
+      - targets:
+        - 10.160.51.226:9182
+        labels:
+          instance: 'OCI-VPEX02: 10.160.51.226'
+          vm_name: OCI-VPEX02
+          private_ip: 10.160.51.226
+          application_type: Exchange
+          role: windows
+      - targets:
+        - 10.160.52.51:9182
+        labels:
+          instance: 'OCI-PVFPSUPP: 10.160.52.51'
+          vm_name: OCI-PVFPSUPP
+          private_ip: 10.160.52.51
+          application_type: Forcepoint
+          role: windows
+      - targets:
+        - 10.160.52.50:9100
+        labels:
+          instance: 'OCI-PVFPDSPM: 10.160.52.50'
+          vm_name: OCI-PVFPDSPM
+          private_ip: 10.160.52.50
+          application_type: Forcepoint
+          role: linux
+      - targets:
+        - 10.160.52.49:9100
+        labels:
+          instance: 'OCI-PVFPEDLP: 10.160.52.49'
+          vm_name: OCI-PVFPEDLP
+          private_ip: 10.160.52.49
+          application_type: Forcepoint DLP
+          role: linux
+      - targets:
+        - 10.160.52.48:9100
+        labels:
+          instance: 'OCI-PVFPWDLP: 10.160.52.48'
+          vm_name: OCI-PVFPWDLP
+          private_ip: 10.160.52.48
+          application_type: Forcepoint DLP
+          role: linux
+      - targets:
+        - 10.160.52.47:9182
+        labels:
+          instance: 'OCI-PVFPSMAPP: 10.160.52.47'
+          vm_name: OCI-PVFPSMAPP
+          private_ip: 10.160.52.47
+          application_type: Forcepoint App
+          role: windows
+      - targets:
+        - 10.160.52.46:9182
+        labels:
+          instance: 'OCI-PVFPSMAPP: 10.160.52.46'
+          vm_name: OCI-PVFPSMAPP
+          private_ip: 10.160.52.46
+          application_type: Forcepoint App
+          role: windows
+      - targets:
+        - 10.160.49.80:9182
+        labels:
+          instance: 'OCI_NBSCHDL01: 10.160.49.80'
+          vm_name: OCI_NBSCHDL01
+          private_ip: 10.160.49.80
+          application_type: Netbase App
+          role: windows
+      - targets:
+        - 10.160.49.78:9182
+        labels:
+          instance: 'OCI_PVGISAPP: 10.160.49.78'
+          vm_name: OCI_PVGISAPP
+          private_ip: 10.160.49.78
+          application_type: GIS App
+          role: windows
+      - targets:
+        - 10.160.52.44:9182
+        labels:
+          instance: 'oci_vptenableapp: 10.160.52.44'
+          vm_name: oci_vptenableapp
+          private_ip: 10.160.52.44
+          application_type: Tenable App
+          role: windows
+      - targets:
+        - 10.160.52.33:9100
+        labels:
+          instance: 'oci_vptencnsm: 10.160.52.33'
+          vm_name: oci_vptencnsm
+          private_ip: 10.160.52.33
+          application_type: Tenable
+          role: linux
+      - targets:
+        - 10.160.52.31:9100
+        labels:
+          instance: 'oci_vptencscvi: 10.160.52.31'
+          vm_name: oci_vptencscvi
+          private_ip: 10.160.52.31
+          application_type: Tenable
+          role: linux
+      - targets:
+        - 10.160.50.55:9182
+        labels:
+          instance: 'oci_vptfsdb2: 10.160.50.55'
+          vm_name: oci_vptfsdb2
+          private_ip: 10.160.50.55
+          application_type: TFS DB
+          role: windows
+      - targets:
+        - 10.160.50.54:9182
+        labels:
+          instance: 'oci_vptfsdb1: 10.160.50.54'
+          vm_name: oci_vptfsdb1
+          private_ip: 10.160.50.54
+          application_type: TFS DB
+          role: windows
+      - targets:
+        - 10.160.48.17:9100
+        labels:
+          instance: 'OCI_vpvisitorAPP01: 10.160.48.17'
+          vm_name: OCI_vpvisitorAPP01
+          private_ip: 10.160.48.17
+          application_type: VMS Web
+          role: linux
+      - targets:
+        - 10.160.49.72:9100
+        labels:
+          instance: 'oci_vpems_app1: 10.160.49.72'
+          vm_name: oci_vpems_app1
+          private_ip: 10.160.49.72
+          application_type: ZTNA App
+          role: linux
+      - targets:
+        - 10.160.49.71:9100
+        labels:
+          instance: 'oci_ivrservicesuat: 10.160.49.71'
+          vm_name: oci_ivrservicesuat
+          private_ip: 10.160.49.71
+          application_type: GEN IVR Callcenter App
+          role: linux
+      - targets:
+        - 10.160.49.70:9100
+        labels:
+          instance: 'oci_vpccgens: 10.160.49.70'
+          vm_name: oci_vpccgens
+          private_ip: 10.160.49.70
+          application_type: GEN Callcnter
+          role: linux
+      - targets:
+        - 10.160.50.40:9182
+        labels:
+          instance: 'oci_vpontimedb: 10.160.50.40'
+          vm_name: oci_vpontimedb
+          private_ip: 10.160.50.40
+          application_type: Ontime DB
+          role: windows
+      - targets:
+        - 10.160.52.32:9100
+        labels:
+          instance: 'oci_vptencnvi: 10.160.52.32'
+          vm_name: oci_vptencnvi
+          private_ip: 10.160.52.32
+          application_type: Tenable
+          role: linux
+      - targets:
+        - 10.160.52.28:9100
+        labels:
+          instance: 'oci_vptenapp: 10.160.52.28'
+          vm_name: oci_vptenapp
+          private_ip: 10.160.52.28
+          application_type: Tenable App
+          role: linux
+      - targets:
+        - 10.160.49.14:9182
+        labels:
+          instance: 'PS_PRODINTG: 10.160.49.14'
+          vm_name: PS_PRODINTG
+          private_ip: 10.160.49.14
+          application_type: Documentation Managment App
+          role: windows
+      - targets:
+        - 10.160.48.22:9182
+        labels:
+          instance: 'PS_PRODIHS03: 10.160.48.22'
+          vm_name: PS_PRODIHS03
+          private_ip: 10.160.48.22
+          application_type: Documentation Managment Web
+          role: windows
+      - targets:
+        - 10.160.48.28:9182
+        labels:
+          instance: 'SS_VPFNETMOB: 10.160.48.28'
+          vm_name: SS_VPFNETMOB
+          private_ip: 10.160.48.28
+          application_type: Filenet Web
+          role: windows
+      - targets:
+        - 10.160.50.41:9182
+        labels:
+          instance: 'OCI_VPAMRDB: 10.160.50.41'
+          vm_name: OCI_VPAMRDB
+          private_ip: 10.160.50.41
+          application_type: CCB DB
+          role: windows
+      - targets:
+        - 10.160.50.28:9182
+        labels:
+          instance: 'OCI_TVCDAIDB: 10.160.50.28'
+          vm_name: OCI_TVCDAIDB
+          private_ip: 10.160.50.28
+          application_type: Customer Data AI DB
+          role: windows
+      - targets:
+        - 10.160.49.62:9182
+        labels:
+          instance: 'oci_qsbiprod01: 10.160.49.62'
+          vm_name: oci_qsbiprod01
+          private_ip: 10.160.49.62
+          application_type: QSBI
+          role: windows
+      - targets:
+        - 10.160.51.55:9182
+        labels:
+          instance: 'OCI_Veeam_Backup: 10.160.51.55'
+          vm_name: OCI_Veeam_Backup
+          private_ip: 10.160.51.55
+          application_type: Veem Backup App
+          role: windows
+      - targets:
+        - 10.160.52.27:9182
+        labels:
+          instance: 'oci_nama_epm: 10.160.52.27'
+          vm_name: oci_nama_epm
+          private_ip: 10.160.52.27
+          application_type: Hyperion Budget
+          role: windows
+      - targets:
+        - 10.160.52.23:9100
+        labels:
+          instance: 'oci_owwsc_rapid: 10.160.52.23'
+          vm_name: oci_owwsc_rapid
+          private_ip: 10.160.52.23
+          application_type: Rapid
+          role: linux
+      - targets:
+        - 10.160.49.20:9182
+        labels:
+          instance: 'oci_infrrpt01: 10.160.49.20'
+          vm_name: oci_infrrpt01
+          private_ip: 10.160.49.20
+          application_type: HXGN Infor App
+          role: windows
+      - targets:
+        - 10.160.52.43:9182
+        labels:
+          instance: 'oci_vsimwcon01: 10.160.52.43'
+          vm_name: oci_vsimwcon01
+          private_ip: 10.160.52.43
+          application_type: SIEM
+          role: windows
+      - targets:
+        - 10.160.50.51:9100
+        labels:
+          instance: 'OCI_VPEMS_DB2: 10.160.50.51'
+          vm_name: OCI_VPEMS_DB2
+          private_ip: 10.160.50.51
+          application_type: ZTNA DB
+          role: linux
+      - targets:
+        - 10.160.50.50:9100
+        labels:
+          instance: 'OCI_VPEMS_DB1: 10.160.50.50'
+          vm_name: OCI_VPEMS_DB1
+          private_ip: 10.160.50.50
+          application_type: ZTNA DB
+          role: linux
+      - targets:
+        - 10.160.48.16:9100
+        labels:
+          instance: 'OCI_VPVIDEOWEB: 10.160.48.16'
+          vm_name: OCI_VPVIDEOWEB
+          private_ip: 10.160.48.16
+          application_type: Video Web
+          role: linux
+      - targets:
+        - 10.160.48.11:9182
+        labels:
+          instance: 'OCI_DTPDMZWS01: 10.160.48.11'
+          vm_name: OCI_DTPDMZWS01
+          private_ip: 10.160.48.11
+          application_type: DMA Web
+          role: windows
+      - targets:
+        - 10.160.50.42:9182
+        labels:
+          instance: 'OCI_VPPTASDB: 10.160.50.42'
+          vm_name: OCI_VPPTASDB
+          private_ip: 10.160.50.42
+          application_type: TAS DB
+          role: windows
+      - targets:
+        - 10.160.50.36:9182
+        labels:
+          instance: 'OCI_VPAMIDB: 10.160.50.36'
+          vm_name: OCI_VPAMIDB
+          private_ip: 10.160.50.36
+          application_type: CCB AMI DB
+          role: windows
+      - targets:
+        - 10.160.50.35:9100
+        labels:
+          instance: 'OCI_VPVIDEODB: 10.160.50.35'
+          vm_name: OCI_VPVIDEODB
+          private_ip: 10.160.50.35
+          application_type: Video DB
+          role: linux
+      - targets:
+        - 10.160.52.35:9182
+        labels:
+          instance: 'OCI_VPKAVDB01: 10.160.52.35'
+          vm_name: OCI_VPKAVDB01
+          private_ip: 10.160.52.35
+          application_type: Kasper
+          role: windows
+      - targets:
+        - 10.160.52.34:9182
+        labels:
+          instance: 'OCI_VPTENAPI: 10.160.52.34'
+          vm_name: OCI_VPTENAPI
+          private_ip: 10.160.52.34
+          application_type: Tenable API
+          role: windows
+      - targets:
+        - 10.160.48.19:9182
+        labels:
+          instance: 'PS_ProdCPEAE02: 10.160.48.19'
+          vm_name: PS_ProdCPEAE02
+          private_ip: 10.160.48.19
+          application_type: Documentation Managment Web
+          role: windows
+      - targets:
+        - 10.160.48.18:9182
+        labels:
+          instance: 'PS_ProdCPEAE01: 10.160.48.18'
+          vm_name: PS_ProdCPEAE01
+          private_ip: 10.160.48.18
+          application_type: Documentation Managment Web
+          role: windows
+      - targets:
+        - 10.160.48.20:9182
+        labels:
+          instance: 'PS_PRODIHS01: 10.160.48.20'
+          vm_name: PS_PRODIHS01
+          private_ip: 10.160.48.20
+          application_type: Documentation Managment Web
+          role: windows
+      - targets:
+        - 10.160.48.21:9182
+        labels:
+          instance: 'PS_PRODIHS02: 10.160.48.21'
+          vm_name: PS_PRODIHS02
+          private_ip: 10.160.48.21
+          application_type: Documentation Managment Web
+          role: windows
+      - targets:
+        - 10.160.52.18:9182
+        labels:
+          instance: 'OCI_SIEM_LANCOLLECTOR: 10.160.52.18'
+          vm_name: OCI_SIEM_LANCOLLECTOR
+          private_ip: 10.160.52.18
+          application_type: SIEM
+          role: windows
+      - targets:
+        - 10.160.50.16:9100
+        labels:
+          instance: 'OCI_vpvistorDB01: 10.160.50.16'
+          vm_name: OCI_vpvistorDB01
+          private_ip: 10.160.50.16
+          application_type: VMS DB
+          role: linux
+      - targets:
+        - 10.160.50.15:9100
+        labels:
+          instance: 'OCI_VPVIDEOREC: 10.160.50.15'
+          vm_name: OCI_VPVIDEOREC
+          private_ip: 10.160.50.15
+          application_type: Video DB
+          role: linux
+      - targets:
+        - 10.160.49.53:9182
+        labels:
+          instance: 'oci_vppms: 10.160.49.53'
+          vm_name: oci_vppms
+          private_ip: 10.160.49.53
+          application_type: Printer App
+          role: windows
+      - targets:
+        - 10.160.49.57:9182
+        labels:
+          instance: 'oci_vpcwapp: 10.160.49.57'
+          vm_name: oci_vpcwapp
+          private_ip: 10.160.49.57
+          application_type: Caseware App
+          role: windows
+      - targets:
+        - 10.160.49.63:9182
+        labels:
+          instance: 'oci_infrbc01: 10.160.49.63'
+          vm_name: oci_infrbc01
+          private_ip: 10.160.49.63
+          application_type: HXGN Infor App
+          role: windows
+      - targets:
+        - 10.160.49.64:9182
+        labels:
+          instance: 'oci_vpmrb: 10.160.49.64'
+          vm_name: oci_vpmrb
+          private_ip: 10.160.49.64
+          application_type: Meeting Screen App
+          role: windows
+      - targets:
+        - 10.160.49.67:9182
+        labels:
+          instance: 'oci_vpsamapp: 10.160.49.67'
+          vm_name: oci_vpsamapp
+          private_ip: 10.160.49.67
+          application_type: Survey App
+          role: windows
+      - targets:
+        - 10.160.49.47:9182
+        labels:
+          instance: 'oci_vpfnetmig: 10.160.49.47'
+          vm_name: oci_vpfnetmig
+          private_ip: 10.160.49.47
+          application_type: Filenet Web
+          role: windows
+      - targets:
+        - 10.160.49.76:9182
+        labels:
+          instance: 'oci_vpagms: 10.160.49.76'
+          vm_name: oci_vpagms
+          private_ip: 10.160.49.76
+          application_type: Aquaview App
+          role: windows
+      - targets:
+        - 10.160.49.37:9182
+        labels:
+          instance: 'oci_vpinoveqebok: 10.160.49.37'
+          vm_name: oci_vpinoveqebok
+          private_ip: 10.160.49.37
+          application_type: Data Processing App
+          role: windows
+      - targets:
+        - 10.160.49.59:9100
+        labels:
+          instance: 'oci_vpptasapps: 10.160.49.59'
+          vm_name: oci_vpptasapps
+          private_ip: 10.160.49.59
+          application_type: TAS App
+          role: linux
+      - targets:
+        - 10.160.49.60:9100
+        labels:
+          instance: 'oci_vpptasrabbit: 10.160.49.60'
+          vm_name: oci_vpptasrabbit
+          private_ip: 10.160.49.60
+          application_type: TAS
+          role: linux
+      - targets:
+        - 10.160.50.45:9182
+        labels:
+          instance: 'OCI_ESERVICESFS: 10.160.50.45'
+          vm_name: OCI_ESERVICESFS
+          private_ip: 10.160.50.45
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.50.32:9182
+        labels:
+          instance: 'OCI_LIMSDB01: 10.160.50.32'
+          vm_name: OCI_LIMSDB01
+          private_ip: 10.160.50.32
+          application_type: LIMS DB
+          role: windows
+      - targets:
+        - 10.160.49.79:9182
+        labels:
+          instance: 'oci_pvvertgisapp: 10.160.49.79'
+          vm_name: oci_pvvertgisapp
+          private_ip: 10.160.49.79
+          application_type: GIS App
+          role: windows
+      - targets:
+        - 10.160.49.73:9100
+        labels:
+          instance: 'oci_vpems_app2: 10.160.49.73'
+          vm_name: oci_vpems_app2
+          private_ip: 10.160.49.73
+          application_type: ZTNA App
+          role: linux
+      - targets:
+        - 10.160.52.29:9182
+        labels:
+          instance: 'oci_vpteniesen: 10.160.52.29'
+          vm_name: oci_vpteniesen
+          private_ip: 10.160.52.29
+          application_type: Tenable
+          role: windows
+      - targets:
+        - 10.160.52.26:9182
+        labels:
+          instance: 'oci_vpkavapp01: 10.160.52.26'
+          vm_name: oci_vpkavapp01
+          private_ip: 10.160.52.26
+          application_type: Kasper App
+          role: windows
+      - targets:
+        - 10.160.52.24:9182
+        labels:
+          instance: 'oci_magic01: 10.160.52.24'
+          vm_name: oci_magic01
+          private_ip: 10.160.52.24
+          application_type: Screen Magic
+          role: windows
+      - targets:
+        - 10.160.52.30:9182
+        labels:
+          instance: 'oci_vpteniesm: 10.160.52.30'
+          vm_name: oci_vpteniesm
+          private_ip: 10.160.52.30
+          application_type: Tenable
+          role: windows
+      - targets:
+        - 10.160.52.25:9182
+        labels:
+          instance: 'oci_vkaspqwy: 10.160.52.25'
+          vm_name: oci_vkaspqwy
+          private_ip: 10.160.52.25
+          application_type: Kasper
+          role: windows
+      - targets:
+        - 10.160.52.17:9100
+        labels:
+          instance: 'oci_vpsiemocapp: 10.160.52.17'
+          vm_name: oci_vpsiemocapp
+          private_ip: 10.160.52.17
+          application_type: SIEM App
+          role: linux
+      - targets:
+        - 10.160.49.13:9182
+        labels:
+          instance: 'oci_vptfs: 10.160.49.13'
+          vm_name: oci_vptfs
+          private_ip: 10.160.49.13
+          application_type: TFS
+          role: windows
+      - targets:
+        - 10.160.49.27:9182
+        labels:
+          instance: 'ps_vpqsnode2: 10.160.49.27'
+          vm_name: ps_vpqsnode2
+          private_ip: 10.160.49.27
+          application_type: SIEM
+          role: windows
+      - targets:
+        - 10.160.49.34:9182
+        labels:
+          instance: 'ps_pvqlikapp: 10.160.49.34'
+          vm_name: ps_pvqlikapp
+          private_ip: 10.160.49.34
+          application_type: QlikSense App
+          role: windows
+      - targets:
+        - 10.160.49.24:9182
+        labels:
+          instance: 'ss_qlinknprt01: 10.160.49.24'
+          vm_name: ss_qlinknprt01
+          private_ip: 10.160.49.24
+          application_type: QlikSense
+          role: windows
+      - targets:
+        - 10.160.49.19:9182
+        labels:
+          instance: 'oci_itamidware: 10.160.49.19'
+          vm_name: oci_itamidware
+          private_ip: 10.160.49.19
+          application_type: HXGN Infor
+          role: windows
+      - targets:
+        - 10.160.49.12:9100
+        labels:
+          instance: 'oci_vpvideoapi: 10.160.49.12'
+          vm_name: oci_vpvideoapi
+          private_ip: 10.160.49.12
+          application_type: Video App
+          role: linux
+      - targets:
+        - 10.160.50.31:9182
+        labels:
+          instance: 'OCI_VPHXGDB_RE: 10.160.50.31'
+          vm_name: OCI_VPHXGDB_RE
+          private_ip: 10.160.50.31
+          application_type: HXGN DB
+          role: windows
+      - targets:
+        - 10.160.49.23:9182
+        labels:
+          instance: 'OCI_Vpcmmsrep: 10.160.49.23'
+          vm_name: OCI_Vpcmmsrep
+          private_ip: 10.160.49.23
+          application_type: HXGN CMMS
+          role: windows
+      - targets:
+        - 10.160.49.25:9182
+        labels:
+          instance: 'OCI_INFROS02: 10.160.49.25'
+          vm_name: OCI_INFROS02
+          private_ip: 10.160.49.25
+          application_type: HXGN Infor
+          role: windows
+      - targets:
+        - 10.160.51.52:9100
+        labels:
+          instance: 'Rackware_server_02: 10.160.51.52'
+          vm_name: Rackware_server_02
+          private_ip: 10.160.51.52
+          application_type: Rackware
+          role: linux
+      - targets:
+        - 10.160.52.40:9100
+        labels:
+          instance: 'oci_kafkasiemcoll: 10.160.52.40'
+          vm_name: oci_kafkasiemcoll
+          private_ip: 10.160.52.40
+          application_type: SIEM Kafka
+          role: linux
+      - targets:
+        - 10.160.49.68:9182
+        labels:
+          instance: 'oci_vphydroq_app: 10.160.49.68'
+          vm_name: oci_vphydroq_app
+          private_ip: 10.160.49.68
+          application_type: Aquaview App
+          role: windows
+      - targets:
+        - 10.160.52.39:9182
+        labels:
+          instance: 'oci_dmzsiemcoll: 10.160.52.39'
+          vm_name: oci_dmzsiemcoll
+          private_ip: 10.160.52.39
+          application_type: SIEM DMZ
+          role: windows
+      - targets:
+        - 10.160.52.37:9182
+        labels:
+          instance: 'oci_prodsiemcoll: 10.160.52.37'
+          vm_name: oci_prodsiemcoll
+          private_ip: 10.160.52.37
+          application_type: SIEM Prod
+          role: windows
+      - targets:
+        - 10.160.52.38:9182
+        labels:
+          instance: 'oci_uatsiemcoll: 10.160.52.38'
+          vm_name: oci_uatsiemcoll
+          private_ip: 10.160.52.38
+          application_type: SIEM UAT
+          role: windows
+      - targets:
+        - 10.160.49.41:9100
+        labels:
+          instance: 'oci_vpapiapp02: 10.160.49.41'
+          vm_name: oci_vpapiapp02
+          private_ip: 10.160.49.41
+          application_type: Eservice API
+          role: linux
+      - targets:
+        - 10.160.49.42:9100
+        labels:
+          instance: 'oci_vpapiapp01: 10.160.49.42'
+          vm_name: oci_vpapiapp01
+          private_ip: 10.160.49.42
+          application_type: Eservice API
+          role: linux
+      - targets:
+        - 10.160.49.61:9182
+        labels:
+          instance: 'oci_vpnwcfgi: 10.160.49.61'
+          vm_name: oci_vpnwcfgi
+          private_ip: 10.160.49.61
+          application_type: NW Backup
+          role: windows
+      - targets:
+        - 10.160.50.46:9182
+        labels:
+          instance: 'oci_esfs: 10.160.50.46'
+          vm_name: oci_esfs
+          private_ip: 10.160.50.46
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.50.17:9182
+        labels:
+          instance: 'oci_esdb01: 10.160.50.17'
+          vm_name: oci_esdb01
+          private_ip: 10.160.50.17
+          application_type: Eservice Main DB
+          role: windows
+      - targets:
+        - 10.160.50.25:9182
+        labels:
+          instance: 'oci_vpesdb04: 10.160.50.25'
+          vm_name: oci_vpesdb04
+          private_ip: 10.160.50.25
+          application_type: Eservice Main DB
+          role: windows
+      - targets:
+        - 10.160.50.18:9182
+        labels:
+          instance: 'oci_esdb02: 10.160.50.18'
+          vm_name: oci_esdb02
+          private_ip: 10.160.50.18
+          application_type: Eservice Main DB
+          role: windows
+      - targets:
+        - 10.160.50.24:9182
+        labels:
+          instance: 'oci_vpesdb03: 10.160.50.24'
+          vm_name: oci_vpesdb03
+          private_ip: 10.160.50.24
+          application_type: Eservice Main DB
+          role: windows
+      - targets:
+        - 10.160.50.23:9182
+        labels:
+          instance: 'oci_vpeserbilldb: 10.160.50.23'
+          vm_name: oci_vpeserbilldb
+          private_ip: 10.160.50.23
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.48.14:9182
+        labels:
+          instance: 'oci_esapws01: 10.160.48.14'
+          vm_name: oci_esapws01
+          private_ip: 10.160.48.14
+          application_type: Eservice Web
+          role: windows
+      - targets:
+        - 10.160.50.30:9182
+        labels:
+          instance: 'oci_gisdbm_01: 10.160.50.30'
+          vm_name: oci_gisdbm_01
+          private_ip: 10.160.50.30
+          application_type: GIS DB
+          role: windows
+      - targets:
+        - 10.160.48.26:9182
+        labels:
+          instance: 'oci_vtnwsweb: 10.160.48.26'
+          vm_name: oci_vtnwsweb
+          private_ip: 10.160.48.26
+          application_type: NWS Website
+          role: windows
+      - targets:
+        - 10.160.49.18:9182
+        labels:
+          instance: 'oci_esrpt02: 10.160.49.18'
+          vm_name: oci_esrpt02
+          private_ip: 10.160.49.18
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.17:9182
+        labels:
+          instance: 'oci_esrpt01: 10.160.49.17'
+          vm_name: oci_esrpt01
+          private_ip: 10.160.49.17
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.15:9182
+        labels:
+          instance: 'oci_esextapp01: 10.160.49.15'
+          vm_name: oci_esextapp01
+          private_ip: 10.160.49.15
+          application_type: Eservice main API
+          role: windows
+      - targets:
+        - 10.160.50.38:9182
+        labels:
+          instance: 'oci_vplimsproddb: 10.160.50.38'
+          vm_name: oci_vplimsproddb
+          private_ip: 10.160.50.38
+          application_type: LIMS DB
+          role: windows
+      - targets:
+        - 10.160.49.44:9182
+        labels:
+          instance: 'oci_vpapi_bill_a: 10.160.49.44'
+          vm_name: oci_vpapi_bill_a
+          private_ip: 10.160.49.44
+          application_type: Eservice Ebill API
+          role: windows
+      - targets:
+        - 10.160.49.50:9182
+        labels:
+          instance: 'oci_esapp01: 10.160.49.50'
+          vm_name: oci_esapp01
+          private_ip: 10.160.49.50
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.49:9182
+        labels:
+          instance: 'oci_esapp02: 10.160.49.49'
+          vm_name: oci_esapp02
+          private_ip: 10.160.49.49
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.29:9182
+        labels:
+          instance: 'oci_vpinfor: 10.160.49.29'
+          vm_name: oci_vpinfor
+          private_ip: 10.160.49.29
+          application_type: Eservice
+          role: windows
+      - targets:
+        - 10.160.49.22:9182
+        labels:
+          instance: 'oci_vpinfrapp01: 10.160.49.22'
+          vm_name: oci_vpinfrapp01
+          private_ip: 10.160.49.22
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.11:9182
+        labels:
+          instance: 'oci_vpapi_bill_b: 10.160.49.11'
+          vm_name: oci_vpapi_bill_b
+          private_ip: 10.160.49.11
+          application_type: Eservice Ebill API
+          role: windows
+      - targets:
+        - 10.160.49.45:9182
+        labels:
+          instance: 'oci_vpccbapp: 10.160.49.45'
+          vm_name: oci_vpccbapp
+          private_ip: 10.160.49.45
+          application_type: CCB App
+          role: windows
+      - targets:
+        - 10.160.49.26:9182
+        labels:
+          instance: 'oci_eservicesprod_app: 10.160.49.26'
+          vm_name: oci_eservicesprod_app
+          private_ip: 10.160.49.26
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.16:9182
+        labels:
+          instance: 'oci_esextapp02: 10.160.49.16'
+          vm_name: oci_esextapp02
+          private_ip: 10.160.49.16
+          application_type: Eservice main API
+          role: windows
+      - targets:
+        - 10.160.49.75:9182
+        labels:
+          instance: 'oci_esextapp03: 10.160.49.75'
+          vm_name: oci_esextapp03
+          private_ip: 10.160.49.75
+          application_type: Eservice main API
+          role: windows
+      - targets:
+        - 10.160.49.66:9182
+        labels:
+          instance: 'oci_esrvctst01: 10.160.49.66'
+          vm_name: oci_esrvctst01
+          private_ip: 10.160.49.66
+          application_type: Eservice
+          role: windows
+      - targets:
+        - 10.160.49.38:9182
+        labels:
+          instance: 'oci_vpbmsapp: 10.160.49.38'
+          vm_name: oci_vpbmsapp
+          private_ip: 10.160.49.38
+          application_type: CCB BMS App
+          role: windows
+      - targets:
+        - 10.160.49.35:9182
+        labels:
+          instance: 'oci_vpesweb1: 10.160.49.35'
+          vm_name: oci_vpesweb1
+          private_ip: 10.160.49.35
+          application_type: Eservice Web
+          role: windows
+      - targets:
+        - 10.160.49.36:9182
+        labels:
+          instance: 'oci_vpesweb2: 10.160.49.36'
+          vm_name: oci_vpesweb2
+          private_ip: 10.160.49.36
+          application_type: Eservice Web
+          role: windows
+      - targets:
+        - 10.160.49.21:9182
+        labels:
+          instance: 'oci_infrapp02: 10.160.49.21'
+          vm_name: oci_infrapp02
+          private_ip: 10.160.49.21
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.49.40:9182
+        labels:
+          instance: 'oci_esextapp04: 10.160.49.40'
+          vm_name: oci_esextapp04
+          private_ip: 10.160.49.40
+          application_type: Eservice main API
+          role: windows
+      - targets:
+        - 10.160.50.27:9182
+        labels:
+          instance: 'oci_vpapidb: 10.160.50.27'
+          vm_name: oci_vpapidb
+          private_ip: 10.160.50.27
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.50.26:9182
+        labels:
+          instance: 'oci_vpbillsrepo3: 10.160.50.26'
+          vm_name: oci_vpbillsrepo3
+          private_ip: 10.160.50.26
+          application_type: Eservice Bill DB
+          role: windows
+      - targets:
+        - 10.160.50.43:9182
+        labels:
+          instance: 'oci_proddb1: 10.160.50.43'
+          vm_name: oci_proddb1
+          private_ip: 10.160.50.43
+          application_type: Documentation Managment DB
+          role: windows
+      - targets:
+        - 10.160.48.12:9182
+        labels:
+          instance: 'oci_esws01: 10.160.48.12'
+          vm_name: oci_esws01
+          private_ip: 10.160.48.12
+          application_type: Eservice Web
+          role: windows
+      - targets:
+        - 10.160.48.13:9182
+        labels:
+          instance: 'oci_esws02: 10.160.48.13'
+          vm_name: oci_esws02
+          private_ip: 10.160.48.13
+          application_type: Eservice Web
+          role: windows
+      - targets:
+        - 10.160.48.15:9182
+        labels:
+          instance: 'oci_esapws02: 10.160.48.15'
+          vm_name: oci_esapws02
+          private_ip: 10.160.48.15
+          application_type: Eservice
+          role: windows
+      - targets:
+        - 10.160.50.47:9182
+        labels:
+          instance: 'oci_vpsql_p: 10.160.50.47'
+          vm_name: oci_vpsql_p
+          private_ip: 10.160.50.47
+          application_type: TAS DB
+          role: windows
+      - targets:
+        - 10.160.48.24:9182
+        labels:
+          instance: 'oci_vppoweb: 10.160.48.24'
+          vm_name: oci_vppoweb
+          private_ip: 10.160.48.24
+          application_type: Multaqa Web
+          role: windows
+      - targets:
+        - 10.160.50.21:9182
+        labels:
+          instance: 'oci_vppodb: 10.160.50.21'
+          vm_name: oci_vppodb
+          private_ip: 10.160.50.21
+          application_type: Multaqa DB
+          role: windows
+      - targets:
+        - 10.160.49.58:9182
+        labels:
+          instance: 'oci_vpgisapps: 10.160.49.58'
+          vm_name: oci_vpgisapps
+          private_ip: 10.160.49.58
+          application_type: GIS App
+          role: windows
+      - targets:
+        - 10.160.49.52:9182
+        labels:
+          instance: 'oci_vpdesktop_central: 10.160.49.52'
+          vm_name: oci_vpdesktop_central
+          private_ip: 10.160.49.52
+          application_type: Desktop Center App
+          role: windows
+      - targets:
+        - 10.160.49.51:9182
+        labels:
+          instance: 'oci_vprpaapp: 10.160.49.51'
+          vm_name: oci_vprpaapp
+          private_ip: 10.160.49.51
+          application_type: RPA App
+          role: windows
+      - targets:
+        - 10.160.49.54:9182
+        labels:
+          instance: 'oci_vplimsprod: 10.160.49.54'
+          vm_name: oci_vplimsprod
+          private_ip: 10.160.49.54
+          application_type: LIMS
+          role: windows
+      - targets:
+        - 10.160.49.32:9182
+        labels:
+          instance: 'oci_vppoapp: 10.160.49.32'
+          vm_name: oci_vppoapp
+          private_ip: 10.160.49.32
+          application_type: Multaqa App
+          role: windows
+      - targets:
+        - 10.160.49.30:9182
+        labels:
+          instance: 'oci_vpservice_desk: 10.160.49.30'
+          vm_name: oci_vpservice_desk
+          private_ip: 10.160.49.30
+          application_type: Service Desk App
+          role: windows
+      - targets:
+        - 10.160.49.55:9182
+        labels:
+          instance: 'oci_vptasint: 10.160.49.55'
+          vm_name: oci_vptasint
+          private_ip: 10.160.49.55
+          application_type: TAS
+          role: windows
+      - targets:
+        - 10.160.49.77:9182
+        labels:
+          instance: 'oci_vpvskf: 10.160.49.77'
+          vm_name: oci_vpvskf
+          private_ip: 10.160.49.77
+          application_type: SKF
+          role: windows
+      - targets:
+        - 10.160.49.31:9182
+        labels:
+          instance: 'oci_vpmpgis: 10.160.49.31'
+          vm_name: oci_vpmpgis
+          private_ip: 10.160.49.31
+          application_type: GIS
+          role: windows
+      - targets:
+        - 10.160.51.232:9182
+        labels:
+          instance: 'prod_prv_jump_nama_03: 10.160.51.232'
+          vm_name: prod_prv_jump_nama_03
+          private_ip: 10.160.51.232
+          application_type: Jump
+          role: windows
+      - targets:
+        - 10.160.51.230:9182
+        labels:
+          instance: 'prod_prv_jump_nama_01: 10.160.51.230'
+          vm_name: prod_prv_jump_nama_01
+          private_ip: 10.160.51.230
+          application_type: Jump
+          role: windows
+      - targets:
+        - 10.160.51.233:9182
+        labels:
+          instance: 'prod_prv_jump_nama_04: 10.160.51.233'
+          vm_name: prod_prv_jump_nama_04
+          private_ip: 10.160.51.233
+          application_type: Jump
+          role: windows
+      - targets:
+        - 10.160.51.231:9182
+        labels:
+          instance: 'prod_prv_jump_nama_02: 10.160.51.231'
+          vm_name: prod_prv_jump_nama_02
+          private_ip: 10.160.51.231
+          application_type: Jump
+          role: windows
+      - targets:
+        - 10.160.51.115:9182
+        labels:
+          instance: 'OCI-vpfs: 10.160.51.115'
+          vm_name: OCI-vpfs
+          private_ip: 10.160.51.115
+          application_type: Share Folder
+          role: windows
+      - targets:
+        - 10.160.52.10:9100
+        labels:
+          instance: 'NWS_Nexpose_Rapid7: 10.160.52.10'
+          vm_name: NWS_Nexpose_Rapid7
+          private_ip: 10.160.52.10
+          application_type: Rapid
+          role: linux
+      - targets:
+        - 10.160.51.81:9182
+        labels:
+          instance: 'prod_prv_jump: 10.160.51.81'
+          vm_name: prod_prv_jump
+          private_ip: 10.160.51.81
+          application_type: Jump
+          role: windows
+      - targets:
+        - 10.160.51.51:9100
+        labels:
+          instance: 'Rackware_server_01: 10.160.51.51'
+          vm_name: Rackware_server_01
+          private_ip: 10.160.51.51
+          application_type: Rackware
+          role: linux
+      - targets:
+        - 10.160.51.21:9100
+        labels:
+          instance: 'FAC-VM-B: 10.160.51.21'
+          vm_name: FAC-VM-B
+          private_ip: 10.160.51.21
+          application_type: FAC
+          role: linux
+      - targets:
+        - 10.160.51.20:9100
+        labels:
+          instance: 'FAC-VM-A: 10.160.51.20'
+          vm_name: FAC-VM-A
+          private_ip: 10.160.51.20
+          application_type: FAC
+          role: linux
+      - targets:
+        - 10.160.51.18:9182
+        labels:
+          instance: 'OCI-VPFS: 10.160.51.18'
+          vm_name: OCI-VPFS
+          private_ip: 10.160.51.18
+          application_type: Share Folder
+          role: windows
+      - targets:
+        - 10.160.51.121:9182
+        labels:
+          instance: 'OCI-vpdc2: 10.160.51.121'
+          vm_name: OCI-vpdc2
+          private_ip: 10.160.51.121
+          application_type: AD
+          role: windows
+      - targets:
+        - 10.160.51.120:9182
+        labels:
+          instance: 'OCI-VPDC1: 10.160.51.120'
+          vm_name: OCI-VPDC1
+          private_ip: 10.160.51.120
+          application_type: AD
+          role: windows
+      - targets:
+        - 10.160.51.225:9100
+        labels:
+          instance: 'network_path: 10.160.51.225'
+          vm_name: network_path
+          private_ip: 10.160.51.225
+          application_type: OCI NW
+          role: linux
+      - targets:
+        - 10.160.41.35:9182
+        labels:
+          instance: 'OCI-VTTFSRE: 10.160.41.35'
+          vm_name: OCI-VTTFSRE
+          private_ip: 10.160.41.35
+          application_type: TFS
+          role: windows
+      - targets:
+        - 10.160.41.45:9100
+        labels:
+          instance: 'oci-vtztnapp: 10.160.41.45'
+          vm_name: oci-vtztnapp
+          private_ip: 10.160.41.45
+          application_type: ZTNA App
+          role: linux
+      - targets:
+        - 10.160.41.36:9100
+        labels:
+          instance: 'OCI_VTVIDEOAPP: 10.160.41.36'
+          vm_name: OCI_VTVIDEOAPP
+          private_ip: 10.160.41.36
+          application_type: Video App
+          role: linux
+      - targets:
+        - 10.160.41.24:9182
+        labels:
+          instance: 'qliksensesp_tes: 10.160.41.24'
+          vm_name: qliksensesp_tes
+          private_ip: 10.160.41.24
+          application_type: QlikSense
+          role: windows
+      - targets:
+        - 10.160.41.27:9100
+        labels:
+          instance: 'OCI_VTTASRABBIT: 10.160.41.27'
+          vm_name: OCI_VTTASRABBIT
+          private_ip: 10.160.41.27
+          application_type: TAS
+          role: linux
+      - targets:
+        - 10.160.41.28:9100
+        labels:
+          instance: 'OCI_VTTASMONIT: 10.160.41.28'
+          vm_name: OCI_VTTASMONIT
+          private_ip: 10.160.41.28
+          application_type: TAS
+          role: linux
+      - targets:
+        - 10.160.41.26:9100
+        labels:
+          instance: 'OCI_VTTASAPPS: 10.160.41.26'
+          vm_name: OCI_VTTASAPPS
+          private_ip: 10.160.41.26
+          application_type: TAS App
+          role: linux
+      - targets:
+        - 10.160.42.22:9100
+        labels:
+          instance: 'OCI_TASPRODDB: 10.160.42.22'
+          vm_name: OCI_TASPRODDB
+          private_ip: 10.160.42.22
+          application_type: TAS DB
+          role: linux
+      - targets:
+        - 10.160.41.21:9182
+        labels:
+          instance: 'oci_vtotapp: 10.160.41.21'
+          vm_name: oci_vtotapp
+          private_ip: 10.160.41.21
+          application_type: Ontime App
+          role: windows
+      - targets:
+        - 10.160.41.29:9182
+        labels:
+          instance: 'oci_vteamtsten1: 10.160.41.29'
+          vm_name: oci_vteamtsten1
+          private_ip: 10.160.41.29
+          application_type: HXGN Infor
+          role: windows
+      - targets:
+        - 10.160.42.17:9182
+        labels:
+          instance: 'oci_vtstgdb: 10.160.42.17'
+          vm_name: oci_vtstgdb
+          private_ip: 10.160.42.17
+          application_type: Documentation Managment DB
+          role: windows
+      - targets:
+        - 10.160.41.23:9182
+        labels:
+          instance: 'oci_vthxgneam: 10.160.41.23'
+          vm_name: oci_vthxgneam
+          private_ip: 10.160.41.23
+          application_type: HXGN EAM
+          role: windows
+      - targets:
+        - 10.160.41.20:9182
+        labels:
+          instance: 'oci_vtpoapp: 10.160.41.20'
+          vm_name: oci_vtpoapp
+          private_ip: 10.160.41.20
+          application_type: Multaqa App
+          role: windows
+      - targets:
+        - 10.160.41.19:9182
+        labels:
+          instance: 'oci_vtintgapp: 10.160.41.19'
+          vm_name: oci_vtintgapp
+          private_ip: 10.160.41.19
+          application_type: Documentation Managment App
+          role: windows
+      - targets:
+        - 10.160.41.17:9182
+        labels:
+          instance: 'oci_vtcpeapp1: 10.160.41.17'
+          vm_name: oci_vtcpeapp1
+          private_ip: 10.160.41.17
+          application_type: Documentation Managment App
+          role: windows
+      - targets:
+        - 10.160.41.37:9182
+        labels:
+          instance: 'oci_vtdtpapp1: 10.160.41.37'
+          vm_name: oci_vtdtpapp1
+          private_ip: 10.160.41.37
+          application_type: Halool App
+          role: windows
+      - targets:
+        - 10.160.41.18:9182
+        labels:
+          instance: 'oci_vtaeapp01: 10.160.41.18'
+          vm_name: oci_vtaeapp01
+          private_ip: 10.160.41.18
+          application_type: Documentation Managment App
+          role: windows
+      - targets:
+        - 10.160.41.22:9182
+        labels:
+          instance: 'oci_vuattasint01: 10.160.41.22'
+          vm_name: oci_vuattasint01
+          private_ip: 10.160.41.22
+          application_type: TAS
+          role: windows
+      - targets:
+        - 10.160.41.15:9182
+        labels:
+          instance: 'oci_vteamdb01: 10.160.41.15'
+          vm_name: oci_vteamdb01
+          private_ip: 10.160.41.15
+          application_type: HXGN Advance Report
+          role: windows
+      - targets:
+        - 10.160.41.31:9182
+        labels:
+          instance: 'oci_vtlimsapp01: 10.160.41.31'
+          vm_name: oci_vtlimsapp01
+          private_ip: 10.160.41.31
+          application_type: LIMS App
+          role: windows
+      - targets:
+        - 10.160.41.34:9182
+        labels:
+          instance: 'oci_vteamapp01: 10.160.41.34'
+          vm_name: oci_vteamapp01
+          private_ip: 10.160.41.34
+          application_type: HXGN EAM App
+          role: windows
+      - targets:
+        - 10.160.41.33:9182
+        labels:
+          instance: 'oci_vtsamapp: 10.160.41.33'
+          vm_name: oci_vtsamapp
+          private_ip: 10.160.41.33
+          application_type: Survey App
+          role: windows
+      - targets:
+        - 10.160.41.38:9182
+        labels:
+          instance: 'oci_vteamapp02: 10.160.41.38'
+          vm_name: oci_vteamapp02
+          private_ip: 10.160.41.38
+          application_type: MWM Integration App
+          role: windows
+      - targets:
+        - 10.160.41.25:9182
+        labels:
+          instance: 'uat_oci_uatesweb: 10.160.41.25'
+          vm_name: uat_oci_uatesweb
+          private_ip: 10.160.41.25
+          application_type: Eservice Web
+          role: windows
+      - targets:
+        - 10.160.42.14:9182
+        labels:
+          instance: 'uat_oci_vtestestdb2: 10.160.42.14'
+          vm_name: uat_oci_vtestestdb2
+          private_ip: 10.160.42.14
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.42.13:9182
+        labels:
+          instance: 'uat_oci_estestdb01: 10.160.42.13'
+          vm_name: uat_oci_estestdb01
+          private_ip: 10.160.42.13
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.41.14:9182
+        labels:
+          instance: 'uat_oci_estestapp02: 10.160.41.14'
+          vm_name: uat_oci_estestapp02
+          private_ip: 10.160.41.14
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.41.11:9182
+        labels:
+          instance: 'uat_oci_estestapp01: 10.160.41.11'
+          vm_name: uat_oci_estestapp01
+          private_ip: 10.160.41.11
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.42.12:9182
+        labels:
+          instance: 'uat_oci_esdevdb01: 10.160.42.12'
+          vm_name: uat_oci_esdevdb01
+          private_ip: 10.160.42.12
+          application_type: Eservice DB
+          role: windows
+      - targets:
+        - 10.160.41.13:9182
+        labels:
+          instance: 'uat_oci_esdevapp02: 10.160.41.13'
+          vm_name: uat_oci_esdevapp02
+          private_ip: 10.160.41.13
+          application_type: Eservice App
+          role: windows
+      - targets:
+        - 10.160.41.12:9182
+        labels:
+          instance: 'uat_oci_esdevapp01: 10.160.41.12'
+          vm_name: uat_oci_esdevapp01
+          private_ip: 10.160.41.12
+          application_type: Eservice App
+          role: windows
+
+
+
+
+  - job_name: "fortigate"
+    metrics_path: /probe
+    scheme: http
+    params:
+      token: ["dcqpmknNwc4t64ghnxr57bN5cgq3GN"]
+    static_configs:
+      - targets: ["https://10.160.32.11"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+        replacement: 'NAMA-OCI-FW'
+        regex: '(?:.+)://([^:/]+).*'
+      - target_label: __address__
+        replacement: "172.29.50.3:9710"
+
+  - job_name: "fortigate_exporter"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["172.29.50.3:9710"]
+
+  - job_name: "oci_exporter"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "172.29.50.2:8100"   # replace with your OCI exporter host IP and port
+    # Optional: tune scrape interval if you want faster or slower updates
+    scrape_interval: 60s
+    scrape_timeout: 10s
+# Public URLs (strict SSL)
+  - job_name: 'blackbox_http_public'
+    scrape_timeout: 10s
+    scrape_interval: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        - https://negc.nama.om
+        - https://mpgis.owwsc.nama.om
+          #- https://cms-ipad.owwsc.nama.om
+        - https://vpn.owwsc.nama.om
+        - https://whatsappprod.owwsc.nama.om
+        - https://cmsmobapp.owwsc.nama.om
+          #        - https://mx01.owwsc.nama.om
+          #- https://mx02.owwsc.nama.om
+          #- https://infoupdate.owwsc.nama.om
+          #- https://hulool.owwsc.nama.om
+        - https://mail.owwsc.nama.om
+          #- https://whatsappuat.owwsc.nama.om
+        - https://autodiscover.owwsc.nama.om
+          #- https://app.owwsc.nama.om
+        - https://mta-sts.owwsc.nama.om
+          #- https://ps-vkaspqwy.owwsc.nama.om
+          #- https://2x.owwsc.nama.om
+          #- https://em494681.owwsc.nama.om
+        - https://link.owwsc.nama.om
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 172.29.50.3:9115
+
+  # Internal / wildcard SSL URLs (skip verification)
+  - job_name: 'blackbox_http_internal'
+    scrape_timeout: 10s
+    scrape_interval: 15s
+    metrics_path: /probe
+    params:
+      module: [http_2xx_insecure]
+    static_configs:
+      - targets:
+        - https://survey.owwsc.nama.om
+        - https://owwscccsrpt.owwsc.nama.om
+        - https://owwscoradbt.owwsc.nama.om
+        - https://owwscccst.owwsc.nama.om
+        - https://aquaview.owwsc.nama.om
+        - https://www.owwsc.nama.om
+        - https://www.app.owwsc.nama.om
+        - https://owwsc.nama.om
+        - https://infoupdate.owwsc.nama.om
+        - https://app.owwsc.nama.om
+        - https://10.160.32.13
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: 172.29.50.3:9115
+
+  # Nama veeam pushgw
+
+  - job_name: 'veeam_pushgateway'
+    honor_labels: true
+    static_configs:
+      - targets: ['172.29.50.3:9091']
+
+#oci-backup-exporter
+  - job_name: "oci-backup-exporter"
+    static_configs:
+      - targets: ["10.8.123.243:9109"]
+
+#oci block volume backup
+  - job_name: "oci-block-backup-exporter"
+    static_configs:
+      - targets: ["10.8.123.243:9108"]
+root@namastorage:~/nama-stack#
+
+root@namastorage:~/nama-stack# cd /etc/blackbox_exporter/
+root@namastorage:/etc/blackbox_exporter# ll
+total 12
+drwxr-x---   2 blackbox blackbox 4096 Feb 10  2026 ./
+drwxr-xr-x 114 root     root     4096 Sep 22 06:04 ../
+-rw-r-----   1 blackbox blackbox 1385 Feb 10  2026 blackbox.yml
+root@namastorage:/etc/blackbox_exporter# cat blackbox.yml
+modules:
+  # Standard HTTP probe for public URLs (strict SSL verification)
+  http_2xx:
+    prober: http
+    http:
+      preferred_ip_protocol: "ip4"
+      tls_config:
+        insecure_skip_verify: false   # keep strict verification
+
+  # HTTP probe for internal URLs or wildcard certs (skip SSL verification)
+  http_2xx_insecure:
+    prober: http
+    http:
+      preferred_ip_protocol: "ip4"
+      tls_config:
+        insecure_skip_verify: true    # allow hostname mismatch / self-signed
+
+  http_post_2xx:
+    prober: http
+    http:
+      method: POST
+
+  tcp_connect:
+    prober: tcp
+
+  pop3s_banner:
+    prober: tcp
+    tcp:
+      query_response:
+        - expect: "^+OK"
+      tls: true
+      tls_config:
+        insecure_skip_verify: true
+
+  grpc:
+    prober: grpc
+    grpc:
+      tls: true
+      preferred_ip_protocol: "ip4"
+
+  grpc_plain:
+    prober: grpc
+    grpc:
+      tls: false
+      service: "service1"
+
+  ssh_banner:
+    prober: tcp
+    tcp:
+      query_response:
+        - expect: "^SSH-2.0-"
+        - send: "SSH-2.0-blackbox-ssh-check"
+
+  irc_banner:
+    prober: tcp
+    tcp:
+      query_response:
+        - send: "NICK prober"
+        - send: "USER prober prober prober :prober"
+        - expect: "PING :([^ ]+)"
+          send: "PONG ${1}"
+        - expect: "^:[^ ]+ 001"
+
+  icmp:
+    prober: icmp
+
+  icmp_ttl5:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      ttl: 5
+
+root@namastorage:/etc/blackbox_exporter#
+
+
+vm3
+root@nama-auth-vm:~/keycloak# ll
+total 20
+drwxr-xr-x  3 root    root 4096 Jun 10 10:13 ./
+drwx------  8 root    root 4096 Sep 23 05:18 ../
+-rw-------  1 root    root 1519 Jun  1 06:51 docker-compose.yml
+-rw-------  1 root    root 1082 Jun 10 10:13 .env
+drwx------ 19 dnsmasq root 4096 Sep 13 17:50 postgres/
+root@nama-auth-vm:~/keycloak# cat docker-compose.yml
+version: "3.8"
+
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: keycloak-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD}
+
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+
+    networks:
+      - kcnet
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: keycloak
+    restart: unless-stopped
+
+    command: start
+
+    env_file:
+      - .env
+
+    environment:
+
+      # ===== DATABASE =====
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: ${KC_DB_USERNAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+
+      # ===== ADMIN =====
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+
+      # ===== F5 / PROXY SETTINGS =====
+      KC_PROXY: edge
+      KC_PROXY_HEADERS: xforwarded
+
+      # ===== HOST CONFIG (VERY IMPORTANT) =====
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "true"
+
+      # ===== SECURITY / OPS =====
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+
+    ports:
+      - "172.29.50.4:8080:8080"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    networks:
+      - kcnet
+
+networks:
+  kcnet:
+    driver: bridge
+root@nama-auth-vm:~/keycloak# cat .env
+# DB
+KC_DB=postgres
+KC_DB_URL_HOST=postgres
+KC_DB_URL_DATABASE=keycloak
+KC_DB_USERNAME=keycloak
+KC_DB_PASSWORD=k08kwNZJkL2gW170wWogUaRXHIxy/IqwbQd+W9QJH+8=
+
+# Keycloak Admin
+KEYCLOAK_ADMIN=admin
+KEYCLOAK_ADMIN_PASSWORD=NIEjWoapuwOrU8UThKMOqr5cmUiyc7cktCT9fFVr5dI=
+
+# Host config
+#KC_HOSTNAME=auth.otech.om
+#KC_HOSTNAME_ADMIN=auth.otech.om
+#KC_HOSTNAME_STRICT=true
+#KC_HOSTNAME_STRICT_HTTPS=true
+#KC_HOSTNAME_STRICT_HTTPS=false
+#KC_HTTP_ENABLED=true
+#KC_PROXY=edge
+#KC_PROXY_HEADERS=xforwarded
+#KC_HOSTNAME_URL=http://auth.otech.om
+#
+# =========================
+# HOST CONFIG (IMPORTANT)
+# =========================
+KC_HOSTNAME=identitynama.otech.om
+
+KC_PROXY=edge
+KC_PROXY_HEADERS=xforwarded
+
+KC_HTTP_ENABLED=true
+
+KC_HOSTNAME_STRICT=true
+KC_HOSTNAME_STRICT_HTTPS=true
+# Host config (IMPORTANT)
+#KC_HOSTNAME=auth.otech.om
+#KC_HOSTNAME_PORT=80
+#KC_PROXY=edge
+#KC_PROXY_HEADERS=xforwarded
+
+#KC_HTTP_ENABLED=true
+
+# IMPORTANT: relax strict mode (NO F5 yet)
+#KC_HOSTNAME_STRICT=false
+#KC_HOSTNAME_STRICT_HTTPS=false
+
+###whenaddF5
+#KC_HOSTNAME_STRICT=true
+#KC_HOSTNAME_STRICT_HTTPS=true
+root@nama-auth-vm:~/keycloak#

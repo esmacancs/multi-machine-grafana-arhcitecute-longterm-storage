@@ -1,0 +1,227 @@
+# =============================================================================
+#  MACHINE 1 â€” nama-mon-stack (${MON_IP})  â€”  hardened production stack
+#
+#  F5-backed architecture â€” NO reverse proxy (Traefik removed) on this host.
+#  See ../PRODUCTION-SECURITY-DESIGN.md for the full design.
+#
+#  Rules applied here:
+#   * Every published port is bound to this VM's static IP ${MON_IP} (or stays internal).
+#   * Interim (no F5): Grafana SERVES HTTPS directly on ${MON_IP}:3000 using an
+#     internal-CA leaf (ops/gen-vm-tls.sh). When F5 lands, terminate TLS there
+#     and drop GF_SERVER_* / protocol=https (design §5.1 Option A).
+#   * UFW + the DOCKER-USER chain (ops/ufw-m1.sh) restrict *who* may connect:
+#       - 3000  (grafana)  <- F5 only (+ MGMT/ADMIN pre-F5 TEMP)
+#       - 8427  (vmauth)   <- ${STORAGE_IP} only (vmagent remote_write / self-scrape)
+#       - 9100  (node)     <- ${STORAGE_IP} only
+#   * victoria-metrics port 8428 is NOT published at all (bridge / mon-net only).
+#   * Secrets come from ./secrets/ (root-only, git-ignored) via *_FILE env,
+#     Docker secrets and rendered config files. Nothing secret lives here.
+#   * Run `./deploy.sh` (renders vmauth.yml + datasource, then `up -d`).
+# =============================================================================
+
+networks:
+  mon-net:
+    name: mon-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.90.0.0/16   # pinned â€” avoid clash with the LAN/CIDR of the app VLAN
+
+secrets:
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+  grafana_oidc_client_secret:
+    file: ./secrets/grafana_oidc_client_secret
+  smtp_password:
+    file: ./secrets/smtp_password
+  vmauth_grafana_password:
+    file: ./secrets/vmauth_grafana_password
+  vmauth_ca.pem:
+    file: ./secrets/vmauth_ca.pem
+  vmauth_tls.crt:
+    file: ./secrets/vmauth_tls.crt
+  vmauth_tls.key:
+    file: ./secrets/vmauth_tls.key
+  # interim nip.io HTTPS (ops/gen-vm-tls.sh) — signed by the internal CA
+  grafana_tls.crt:
+    file: ./secrets/grafana_tls.crt
+  grafana_tls.key:
+    file: ./secrets/grafana_tls.key
+
+services:
+
+  # ---------------------------------------------------------------------
+  # VictoriaMetrics â€” long-term storage. Bridge-only, NO host publish.
+  # All traffic (writes from VM2, reads from Grafana) arrives via vmauth.
+  # ---------------------------------------------------------------------
+  victoria-metrics:
+    image: ${VICTORIA_IMAGE}
+    container_name: ${VICTORIA_CONTAINER}
+    restart: unless-stopped
+    networks:
+      - mon-net
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=${VICTORIA_RETENTION}"
+    volumes:
+      - ${VICTORIA_STORAGE_PATH}:/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8428/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${VICTORIA_MEM_LIMIT}
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # vmauth â€” the single auth/TLS boundary in front of VictoriaMetrics.
+  # read/write split via vmauth.yml (rendered by deploy.sh). TLS via
+  # internal CA (secrets/vmauth_tls.{crt,key}, ops/gen-ca.sh).
+  # ---------------------------------------------------------------------
+  vmauth:
+    image: ${VMAUTH_IMAGE}
+    container_name: vmauth
+    restart: unless-stopped
+    networks:
+      - mon-net
+    secrets:
+      - vmauth_tls.crt
+      - vmauth_tls.key
+    ports:
+      - "${MON_IP}:8427:8427"     # UFW: allow STORAGE_IP only
+    volumes:
+      - ./vmauth.yml:/etc/vmauth.yml
+    command:
+      - "-auth.config=/etc/vmauth.yml"
+      - "-httpListenAddr=:8427"
+      - "-tls"
+      - "-tlsCertFile=/run/secrets/vmauth_tls.crt"
+      - "-tlsKeyFile=/run/secrets/vmauth_tls.key"
+      - "-maxConcurrentRequests=64"
+    depends_on:
+      - victoria-metrics
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O - https://127.0.0.1:8427/metrics >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: ${VMAUTH_MEM_LIMIT}
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # Grafana (official 13.2.2 base â€” custom otech-grafana not built yet) â€”
+  # OIDC-only via KC. Interim HTTPS directly (internal-CA leaf); pre-F5 TEMP:
+  # ops/ufw-m1.sh also allows MGMT_CIDR -> 3000 (remove when F5).
+  # Secret values are injected with *_FILE vars / rendered datasource.
+  # ---------------------------------------------------------------------
+  onetech:
+    image: ${ONETECH_IMAGE}
+    container_name: ${ONETECH_CONTAINER}
+    user: "${GRAFANA_UID:-472}:${GRAFANA_GID:-0}"
+    restart: unless-stopped
+    networks:
+      - mon-net
+    secrets:
+      - grafana_admin_password
+      - grafana_oidc_client_secret
+      - smtp_password
+      - vmauth_grafana_password
+      - vmauth_ca.pem
+      - grafana_tls.crt
+      - grafana_tls.key
+    ports:
+      - "${MON_IP}:3000:3000"     # UFW: allow F5 only; interim nip.io HTTPS here
+    environment:
+        # --- SERVE HTTPS DIRECTLY (interim: nip.io, no F5). Cert ops/gen-vm-tls.sh ---
+      - GF_SERVER_PROTOCOL=https
+      - GF_SERVER_CERT_FILE=/run/secrets/grafana_tls.crt
+      - GF_SERVER_CERT_KEY=/run/secrets/grafana_tls.key
+        # --- FORCE OAUTH ONLY (Keycloak "Otech IDP") ---
+      - GF_AUTH_GENERIC_OAUTH_ENABLED=true
+      - GF_LOGIN_CONTENT=Welcome to Otech Monitoring Platform. Use Keycloak (Otech IDP) for access. Contact NOC for support.
+        # --- DISABLE LOCAL LOGIN / ANONYMOUS ---
+      - GF_AUTH_BASIC_ENABLED=false
+      - GF_AUTH_LOGIN_FORM_ENABLED=false
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=${GF_USERS_ALLOW_SIGN_UP}
+        # --- ADMIN (password from secrets file) ---
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
+      - GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION=true
+        # --- OIDC ---
+      - GF_AUTH_GENERIC_OAUTH_NAME=Otech IDP
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_ID=${KC_GRAFANA_CLIENT_ID}
+      - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET__FILE=/run/secrets/grafana_oidc_client_secret
+      - GF_AUTH_GENERIC_OAUTH_SCOPES=openid profile email
+      - GF_AUTH_GENERIC_OAUTH_AUTH_URL=${KC_PUBLIC_URL}/realms/${KC_REALM}/protocol/openid-connect/auth
+      - GF_AUTH_GENERIC_OAUTH_TOKEN_URL=${KC_PUBLIC_URL}/realms/${KC_REALM}/protocol/openid-connect/token
+      - GF_AUTH_GENERIC_OAUTH_API_URL=${KC_PUBLIC_URL}/realms/${KC_REALM}/protocol/openid-connect/userinfo
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH=contains(realm_access.roles[*], 'grafana-admin') && 'Admin' || contains(realm_access.roles[*], 'grafana-editor') && 'Editor' || 'Viewer'
+      - GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_STRICT=false
+      - GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN=true
+      - GF_AUTH_GENERIC_OAUTH_AUTH_STYLE=auto
+      - GF_AUTH_GENERIC_OAUTH_TLS_CLIENT_CA=/run/secrets/vmauth_ca.pem   # KC leaf is internal-CA signed
+      - GF_AUTH_GENERIC_OAUTH_TLS_SKIP_VERIFY_INSECURE=true              # interim self-signed; remove with real certs
+        # --- Server / cookies ---
+      - GF_SERVER_ROOT_URL=${GF_SERVER_ROOT_URL}
+      - GF_SECURITY_COOKIE_SECURE=true
+      - GF_SECURITY_COOKIE_SAMESITE=lax
+      - GF_PANELS_DISABLE_SANITIZE_HTML=true
+      - GF_SERVER_ROUTER_LOGGING=false
+        # --- SMTP (password from secrets file) ---
+      - GF_SMTP_ENABLED=true
+      - GF_SMTP_HOST=${GF_SMTP_HOST}
+      - GF_SMTP_USER=${GF_SMTP_USER}
+      - GF_SMTP_PASSWORD__FILE=/run/secrets/smtp_password
+      - GF_SMTP_FROM_ADDRESS=${GF_SMTP_FROM_ADDRESS}
+      - GF_SMTP_FROM_NAME=${GF_SMTP_FROM_NAME}
+      - GF_SMTP_STARTTLS_POLICY=Mandatory
+        # --- misc ---
+      - GF_PATHS_PROVISIONING=${GF_PATHS_PROVISIONING}
+      - TZ=${TZ}
+    volumes:
+      - ${ONETECH_DATA}:/var/lib/grafana
+      - ./provisioning:/etc/grafana/provisioning
+    depends_on:
+      - victoria-metrics
+    healthcheck:
+      test: ["CMD-SHELL", "curl -skf https://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${ONETECH_MEM_LIMIT}
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # node-exporter â€” host metrics (scrape VM2 scrapes on ${MON_IP}:9100)
+  # ---------------------------------------------------------------------
+  node-exporter:
+    image: ${NODE_IMAGE}
+    container_name: ${NODE_CONTAINER}
+    restart: unless-stopped
+    networks:
+      - mon-net
+    ports:
+      - "${MON_IP}:9100:9100"     # UFW: allow STORAGE_IP only
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    security_opt:
+      - no-new-privileges:true

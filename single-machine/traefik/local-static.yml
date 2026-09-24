@@ -1,0 +1,49 @@
+# =============================================================================
+#  Traefik static configuration — LOCAL Windows / Docker Desktop variant
+#  (mounted by docker-compose.override.yml)
+#  Docker provider is intentionally absent: the daemon socket can't be
+#  bind-mounted into containers on Docker Desktop for Windows. ALL routing
+#  is defined in ./traefik/dynamic-local via the file provider.
+# =============================================================================
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic-local
+    watch: true
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    http:
+      middlewares:
+        - secHeaders
+  metrics:
+    address: ":9102"
+  traefik:
+    address: ":8080"
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+
+api:
+  dashboard: true
+  insecure: false
+
+accessLog:
+  filePath: /var/log/traefik/access.log
+  format: json
+
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true

@@ -1,0 +1,175 @@
+# =============================================================================
+#  MACHINE 3 â€” nama-auth-vm (${AUTH_IP})  â€”  Keycloak + PostgreSQL
+#
+#  F5-backed architecture â€” NO reverse proxy (Traefik removed) on this host.
+#  See ../PRODUCTION-SECURITY-DESIGN.md.
+#
+#  IPs are provider-assigned STATIC: set AUTH_IP in .env; every published port
+#  binds to it and UFW (ops/ufw-m3.sh) restricts the sources.
+#
+#  Rules applied here:
+#   * Keycloak app port 8080 (HTTP->redirect) and 8443 (HTTPS, interim nip.io)
+#     bind ${AUTH_IP} and UFW allows F5 + VM1 (Grafana OIDC discovery/JWKS,
+#     i.e. MON_IP) + VM2 (STORAGE_IP) only.
+#   * KC26 management port 9000 (health + metrics) binds ${AUTH_IP} and UFW
+#     allows ${STORAGE_IP} only (vmagent scrapes it).
+#   * Postgres has NO host port (kcnet bridge only).
+#   * Interim (no F5): Keycloak terminates TLS itself via KC_HTTPS_* (leaf from
+#     ops/gen-vm-tls.sh, signed by internal CA). When F5 lands, terminate TLS
+#     there and drop KC_HTTPS_* / 8443 publish. KC_PROXY=edge + STRICT_HTTPS
+#     keep hardened redirects either way.
+#   * The official Keycloak image has no *_FILE env support, so the entrypoint
+#     exports secrets from /run/secrets before launching kc.sh.
+#
+#  KC images run as non-root (USER 1000) -> secrets must be mode 0444.
+# =============================================================================
+
+networks:
+  kcnet:
+    driver: bridge
+
+secrets:
+  kc_db_password:
+    file: ./secrets/kc_db_password
+  kc_admin_username:
+    file: ./secrets/kc_admin_username
+  kc_admin_password:
+    file: ./secrets/kc_admin_password
+  # interim nip.io HTTPS leaf (ops/gen-vm-tls.sh), signed by the internal CA
+  kc_tls.crt:
+    file: ./secrets/kc_tls.crt
+  kc_tls.key:
+    file: ./secrets/kc_tls.key
+
+services:
+
+  # ---------------------------------------------------------------------
+  # PostgreSQL â€” Keycloak backend. NO host port; only reachable on kcnet.
+  # Uses native POSTGRES_PASSWORD_FILE (no password in compose/env).
+  # ---------------------------------------------------------------------
+  postgres:
+    image: ${PG_IMAGE}
+    container_name: keycloak-db
+    restart: unless-stopped
+    secrets:
+      - kc_db_password
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD_FILE: /run/secrets/kc_db_password
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    networks:
+      - kcnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # Keycloak 26.7.x â€” SSO for Grafana (realm grafana-namawater) + OCI clients.
+  # Entrypoint exports secrets so KEYCLOAK_ADMIN / KC_DB_PASSWORD never appear
+  # as static compose env values.
+  # ---------------------------------------------------------------------
+  keycloak:
+    image: ${KC_IMAGE}
+    container_name: keycloak
+    restart: unless-stopped
+    secrets:
+      - kc_db_password
+      - kc_admin_username
+      - kc_admin_password
+      - kc_tls.crt
+      - kc_tls.key
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+        export KC_DB_PASSWORD="$(cat /run/secrets/kc_db_password)"
+        export KEYCLOAK_ADMIN="$(cat /run/secrets/kc_admin_username)"
+        export KEYCLOAK_ADMIN_PASSWORD="$(cat /run/secrets/kc_admin_password)"
+        if [ "$#" -eq 0 ]; then set -- start; fi
+        exec /opt/keycloak/bin/kc.sh "$@"
+    command: ["start"]
+    environment:
+      # ===== DATABASE (password comes from the entrypoint export) =====
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+
+      # ===== PROXY (interim: no proxy, KC terminates TLS itself → passthrough) =====
+      KC_PROXY: ${KC_PROXY}
+      # KC_PROXY_HEADERS: xforwarded   # set when a TLS-terminating proxy (F5) fronts Keycloak
+
+      # ===== HOSTNAME (VERY IMPORTANT) =====
+      KC_HOSTNAME: ${KC_HOSTNAME}
+      KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "true"
+
+      # ===== LISTEN / MANAGEMENT PORTS =====
+      # 8080 = app (HTTP, redirects to 8443); 8443 = app HTTPS (interim nip.io);
+      # 9000 = KC26 health + metrics (VM2 scrapes) — kept on plain HTTP via
+      # KC_HTTP_MANAGEMENT_SCHEME=http (see .env), since 9000 otherwise
+      # inherits the app TLS and drops the HTTP scrape + container healthcheck.
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 8080
+      KC_HTTP_MANAGEMENT_PORT: 9000
+      KC_HTTP_MANAGEMENT_SCHEME: ${KC_HTTP_MANAGEMENT_SCHEME}
+
+      # ===== INTERIM DIRECT TLS (cert/keys from ops/gen-vm-tls.sh) =====
+      # Leaf cert/private key are read from /run/secrets by KC itself, so no
+      # *_FILE handling is needed (paths, not secret *values*).
+      KC_HTTPS_PORT: ${KC_HTTPS_PORT}
+      KC_HTTPS_CERTIFICATE_FILE: ${KC_HTTPS_CERTIFICATE_FILE}
+      KC_HTTPS_CERTIFICATE_KEY_FILE: ${KC_HTTPS_CERTIFICATE_KEY_FILE}
+
+      # ===== HEALTH / METRICS =====
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      # user-event metrics -> keycloak_user_events_total (KC27 dashboard "capacity planning")
+      KC_EVENT_METRICS_USER_ENABLED: "true"
+      KC_EVENT_METRICS_USER_TAGS: "realm"
+
+      # ===== LOG / MISC =====
+      KC_LOG_LEVEL: INFO
+    ports:
+      - "${AUTH_IP}:8080:8080"     # HTTP (redirects to HTTPS) — UFW: F5 + ${MON_IP} + no others
+      - "${AUTH_IP}:8443:8443"     # interim HTTPS — UFW: F5 + ${MON_IP} (OIDC) + no others
+      - "${AUTH_IP}:9000:9000"     # UFW: allow ${STORAGE_IP} (metrics/health)
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kcnet
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -qi '200' <&3 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # node-exporter â€” host metrics (scraped on ${AUTH_IP}:9100)
+  # ---------------------------------------------------------------------
+  node-exporter:
+    image: ${NODE_IMAGE}
+    container_name: keycloak-node-exporter
+    restart: unless-stopped
+    networks:
+      - kcnet
+    ports:
+      - "${AUTH_IP}:9100:9100"     # UFW: allow ${STORAGE_IP} only
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    security_opt:
+      - no-new-privileges:true

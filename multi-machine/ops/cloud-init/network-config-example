@@ -1,0 +1,26 @@
+# =============================================================================
+#  CLOUD-INIT network-config (v2) for ONE NAMA machine.
+#  Guest must have clock/apt access; DNS may point anywhere you trust.
+#
+#  CHANGE the three values tagged # <-- :
+#    ADDRESS     -> the provider-assigned STATIC IP for this VM (see role table
+#                   in user-data-example.yaml for which of .2/.3/.4 to use on
+#                   the reference subnet — replace with your real assignment)
+#    GATEWAY     -> app-VLAN gateway (usually the F5 self-IP, 172.29.50.1)
+#    IFACE match -> adjust if the NIC is NOT a linux netif named eth*/ens* (e.g.
+#                   hypervisor virtio: enp*/ens* still matches "en*").
+# =============================================================================
+version: 2
+ethernets:
+  nama-en:
+    match:
+      name: "en*"                    # matches eth0/ens3/enp0s3/...
+    dhcp4: false
+    addresses:
+      - 172.29.50.2/24               # <-- per role: .2 / .3 / .4
+    routes:
+      - to: default
+        via: 172.29.50.1             # <-- gateway (F5 self-IP on this VLAN)
+    nameservers:
+      addresses: [1.1.1.1, 8.8.8.8]
+      search: [otech.om]

@@ -1,0 +1,11 @@
+unauthorized_user:
+  url_prefix: http://victoria-metrics:8428
+
+users:
+  - username: "vmagent"
+    password: "CZYm_2GLPX%ithx6"
+    url_prefix: http://victoria-metrics:8428
+
+  - username: "grafana"
+    password: "bRuMm_gC!S@YtgUu"
+    url_prefix: http://victoria-metrics:8428

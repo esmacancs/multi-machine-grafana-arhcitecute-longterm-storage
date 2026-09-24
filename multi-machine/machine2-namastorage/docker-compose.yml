@@ -1,0 +1,139 @@
+# =============================================================================
+#  MACHINE 2 â€” namastorage (${STORAGE_IP})  â€”  vmagent + scraping + exporters
+#
+#  F5-backed architecture â€” see ../PRODUCTION-SECURITY-DESIGN.md.
+#
+#  Rules applied here:
+#   * vmagent's status page binds 127.0.0.1 only (never on the LAN).
+#   * Exporters bind the LAN IP and UFW restricts sources (ops/ufw-m2.sh).
+#   * remote_write goes HTTPS to vmauth on VM1 (${VMAUTH_IP}:8427) with
+#     file-based Basic Auth + internal-CA TLS. The raw VM port 8428 is NEVER
+#     used from here.
+#   * Secrets (vmagent creds + CA) from ./secrets/ (root-only, git-ignored).
+# =============================================================================
+
+secrets:
+  vmagent_user:
+    file: ./secrets/vmagent_user
+  vmagent_pass:
+    file: ./secrets/vmagent_pass
+  vmauth_ca.pem:
+    file: ./secrets/vmauth_ca.pem
+
+services:
+
+  # ---------------------------------------------------------------------
+  # vmagent â€” scraping + remote_write -> vmauth on VM1
+  # ---------------------------------------------------------------------
+  vmagent:
+    image: ${VMAGENT_IMAGE}
+    container_name: ${VMAGENT_CONTAINER}
+    restart: unless-stopped
+    secrets:
+      - vmagent_user
+      - vmagent_pass
+      - vmauth_ca.pem
+    ports:
+      - "127.0.0.1:8429:8429"          # loopback only â€” UI never exposed
+    volumes:
+      - ./scrape.yml:/etc/prometheus/scrape.yml:ro
+      - ${VMAGENT_QUEUE_PATH}:/vmagentdata        # remote-write spill buffer
+    command:
+      - "-promscrape.config=/etc/prometheus/scrape.yml"
+      # --- secure remote write to vmauth (internal CA + Basic Auth from files) ---
+      - "-remoteWrite.url=https://${VMAUTH_IP}:8427/api/v1/write"
+      - "-remoteWrite.basicAuth.usernameFile=/run/secrets/vmagent_user"
+      - "-remoteWrite.basicAuth.passwordFile=/run/secrets/vmagent_pass"
+      - "-remoteWrite.tlsCAFile=/run/secrets/vmauth_ca.pem"
+      - "-remoteWrite.tlsServerName=nama-mon-stack"
+      - "-remoteWrite.tlsInsecureSkipVerify=false"
+      - "-remoteWrite.showURL=false"
+      - "-remoteWrite.tmpDataPath=/vmagentdata"
+      - "-remoteWrite.maxDiskUsagePerURL=${VMAGENT_QUEUE_MAX_DISK:-10GB}"
+      - "-remoteWrite.queues=4"
+    deploy:
+      resources:
+        limits:
+          memory: ${VMAGENT_MEM_LIMIT}
+
+  # ---------------------------------------------------------------------
+  # node-exporter â€” host metrics (M2 self; also scraped targets elsewhere)
+  # ---------------------------------------------------------------------
+  node-exporter:
+    image: ${NODE_IMAGE}
+    container_name: ${NODE_CONTAINER}
+    restart: unless-stopped
+    ports:
+      - "${STORAGE_IP}:9100:9100"        # UFW: monitoring/admin LAN only
+    command:
+      - "--collector.processes"
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # blackbox-exporter â€” HTTP/TLS probes of the F5 VIPs + monitoring hosts
+  # ---------------------------------------------------------------------
+  blackbox:
+    image: ${BLACKBOX_IMAGE}
+    container_name: blackbox
+    restart: unless-stopped
+    ports:
+      - "${STORAGE_IP}:9115:9115"        # UFW: monitoring/admin LAN only
+    command:
+      - "--config.file=/etc/blackbox_exporter/blackbox.yml"
+    volumes:
+      - ./blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # pushgateway â€” Veeam (and other batch jobs) push here on the loopback.
+  # No LAN exposure: bind 127.0.0.1 only.
+  # ---------------------------------------------------------------------
+  veeam-pushgateway:
+    image: ${PUSHGW_IMAGE}
+    container_name: veeam-pushgateway
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9091:9091"          # loopback only
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    security_opt:
+      - no-new-privileges:true
+
+  # ---------------------------------------------------------------------
+  # FortiGate / OCI exporters
+  # ---------------------------------------------------------------------
+  # These exporters ARE in production (scrape.yml targets ${STORAGE_IP}:9710
+  # for FortiGate and the OCI appliance exporters). Fill in the container
+  # images below from the CURRENT working deployment, keep the SAME ports,
+  # and leave them LAN-bound + source-restricted:
+  #
+  # fortigate-exporter:
+  #   image: <existing image/digest>
+  #   container_name: fortigate-exporter
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${STORAGE_IP}:9710:9710"
+  #   deploy: { resources: { limits: { memory: 128m } } }
+  #   security_opt: [ "no-new-privileges:true" ]
+  #
+  # oci-*-exporter:
+  #   image: <existing image/digest>
+  #   container_name: oci-exporter
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${STORAGE_IP}:<port>:<port>"    # as used in scrape.yml
+  #   deploy: { resources: { limits: { memory: 128m } } }
+  #   security_opt: [ "no-new-privileges:true" ]
+  # ---------------------------------------------------------------------

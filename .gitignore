@@ -1,0 +1,35 @@
+# Secrets — never commit real .env / gpg
+.env
+**/.env
+**/.env.gpg
+*.env
+**/.env.bak
+
+# Hardened design (PRODUCTION-SECURITY-DESIGN.md): secret files + rendered configs
+**/secrets/
+*.age
+**/machine1-nama-mon-stack/vmauth.yml
+**/machine1-nama-mon-stack/provisioning/datasources/victoriametrics.yml
+**/machine2-namastorage/scrape.yml
+**/machine2-namastorage/vmagent-queue/
+
+# Keycloak realm import (contains client secrets — regenerate per deployment)
+**/kc-import/
+
+# Runtime data
+**/victoria-metrics-data/
+**/onetech-data/
+**/grafana-data/
+**/postgres/
+**/kc-postgres/
+**/traefik/logs/*
+**/traefik/certs/*
+**/mon-net/
+
+# Dashboards that are generated/provisioned copies
+**/provisioning/dashboards/*.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp

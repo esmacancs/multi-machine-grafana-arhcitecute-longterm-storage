@@ -1,0 +1,31 @@
+# =============================================================================
+#  Traefik dynamic configuration — public routers/services (LOCAL WINDOWS lab)
+#  Loaded ONLY on this Windows/Docker Desktop box via docker-compose.override.yml
+#  (Docker provider is disabled there; Linux hosts use container labels instead).
+#  Hostnames are nip.io -> 10.0.160.236 (this machine's Wi-Fi IP).
+# =============================================================================
+
+http:
+  routers:
+    grafana-web:
+      rule: "Host(`grafana.10.0.160.236.nip.io`) || Host(`cockpit.10.0.160.236.nip.io`)"
+      entryPoints: [websecure]
+      tls: {}
+      middlewares: [secHeaders]
+      service: grafana-svc
+
+    kc-web:
+      rule: "Host(`keycloak.10.0.160.236.nip.io`)"
+      entryPoints: [websecure]
+      tls: {}
+      service: kc-svc
+
+  services:
+    grafana-svc:
+      loadBalancer:
+        servers:
+          - url: "http://grafana:3000"     # mon-net DNS
+    kc-svc:
+      loadBalancer:
+        servers:
+          - url: "http://keycloak:8080"    # mon-net DNS

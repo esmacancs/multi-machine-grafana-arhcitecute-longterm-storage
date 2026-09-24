@@ -1,0 +1,41 @@
+# =============================================================================
+#  blackbox-exporter config — MACHINE 2 (namastorage, ${STORAGE_IP})
+#  Modules used by scrape.yml jobs idmgr; documented in
+#  ../PRODUCTION-SECURITY-DESIGN.md §4.2 / §11.
+# =============================================================================
+
+modules:
+  # plain HTTPS page probe (used for the Grafana / Keycloak F5 VIPs)
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      preferred_ip_protocol: ip4
+      valid_http_versions: [ "HTTP/1.1", "HTTP/2.0" ]
+      follow_redirects: true
+      tls_config:
+        insecure_skip_verify: false
+
+  # interim nip.io HTTPS probe — servers serve internal-CA self-signed leaves
+  # (ops/gen-vm-tls.sh), so skip verification for now. Replace with http_2xx +
+  # real public certs once F5 is live.
+  http_2xx_nipio:
+    prober: http
+    timeout: 10s
+    http:
+      preferred_ip_protocol: ip4
+      valid_http_versions: [ "HTTP/1.1", "HTTP/2.0" ]
+      follow_redirects: true
+      tls_config:
+        insecure_skip_verify: true
+
+  # TLS handshake probe — checks reachability and exposes
+  # probe_ssl_earliest_cert_expiry for cert-expiry alerts.
+  tls_conn:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      tls: true
+      tls_config:
+        insecure_skip_verify: true   # interim internal-CA leaves; false with F5
+        min_version: TLS12

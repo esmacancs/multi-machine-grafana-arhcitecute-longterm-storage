@@ -1,0 +1,29 @@
+# =====================================================================
+#  Traefik dynamic configuration — shared middlewares (LOCAL copy)
+# =====================================================================
+
+http:
+  middlewares:
+    secHeaders:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: strict-origin-when-cross-origin
+        customFrameOptionsValue: "SAMEORIGIN"
+
+    ipAllowCorp:
+      ipAllowList:
+        sourceRange:
+          - 10.0.0.0/8           # RFC1918 (includes this host's LAN + mon-net)
+          - 172.16.0.0/12        # RFC1918 (monitoring LAN)
+          - 192.168.0.0/16       # RFC1918 / Docker Desktop VM
+          - 127.0.0.0/8          # host loopback
+          # PRODUCTION: tighten to your real corp ranges only.
+
+    forwardAuthKc:
+      forwardAuth:
+        address: http://oauth2-proxy:4180/oauth2/auth
+        trustForwardHeader: true

@@ -1,0 +1,48 @@
+# =============================================================================
+#  Traefik dynamic configuration — internal-only routers/services (LOCAL)
+#  Hosts use nip.io (127.0.0.1) so NO public DNS is required.
+#  Access is gated by ipAllowCorp (network) + ForwardAuth->Keycloak.
+#  entryPoint "traefik" is bound to 127.0.0.1:9091 on this box.
+# =============================================================================
+
+http:
+  routers:
+    vm-ui:
+      rule: "Host(`vm.127.0.0.1.nip.io`)"
+      entryPoints: [traefik]
+      service: vm-svc
+      middlewares: [ipAllowCorp, forwardAuthKc]
+
+    vmagent-ui:
+      rule: "Host(`vmagent.127.0.0.1.nip.io`)"
+      entryPoints: [traefik]
+      service: vmagent-svc
+      middlewares: [ipAllowCorp, forwardAuthKc]
+
+    traefik-dash:
+      rule: "Host(`traefik.127.0.0.1.nip.io`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      entryPoints: [traefik]
+      service: api@internal
+      middlewares: [ipAllowCorp, forwardAuthKc]
+
+    # Browser-facing oauth2-proxy endpoints (/oauth2/start, /oauth2/callback, ...).
+    # MUST bypass forwardAuthKc, otherwise the auth server is asked to prove its own auth.
+    oauth2-run:
+      rule: "(Host(`vm.127.0.0.1.nip.io`) || Host(`vmagent.127.0.0.1.nip.io`) || Host(`traefik.127.0.0.1.nip.io`)) && PathPrefix(`/oauth2`)"
+      entryPoints: [traefik]
+      service: oauth2-svc
+      middlewares: [ipAllowCorp]
+
+  services:
+    oauth2-svc:
+      loadBalancer:
+        servers:
+          - url: "http://oauth2-proxy:4180"
+    vm-svc:
+      loadBalancer:
+        servers:
+          - url: "http://victoria-metrics:8428"    # mon-net DNS (single/all-in-one)
+    vmagent-svc:
+      loadBalancer:
+        servers:
+          - url: "http://vmagent:8429"             # mon-net DNS
